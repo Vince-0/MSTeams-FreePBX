@@ -46,7 +46,7 @@ Organisations with MS Teams may want to enable their users to make phone calls f
 
 MS Teams does not oficially support Asterisk as an SBC to connect VOIP services to MS Teams Direct Routing but SIP is SIP.
 
-MS Teams uses an implementation of Session Initiation Protocol and Asterisk is a SIP back-to-back user agent. 
+MS Teams uses an implementation of Session Initiation Protocol and [Asterisk](https://www.asterisk.org/) is a SIP back-to-back user agent. 
 
 This allows Asterisk to bridge SIP channels together for example a telecoms provider on one side and an MS Teams Direct Routing channel on the other.
 
