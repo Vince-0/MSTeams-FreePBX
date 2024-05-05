@@ -2,7 +2,7 @@
 #####################################################################################
 # @author https://github.com/Vince-0
 #
-# This script carries no warranty. Use at your own risk.
+# Use at your own risk.
 #
 # Requires: Debian 12, FreePBX with Asterisk 21.
 #
