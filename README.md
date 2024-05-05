@@ -42,6 +42,24 @@ Use at your own risk.
 
 ## Why
 
+Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with Direct Routing
+
+MS Teams does not oficially support Asterisk as an SBC to connect VOIP services to MS Teams Direct Routing but SIP is SIP.
+
+MS Teams uses an implementation of Session Initiation Protocol and Asterisk is a SIP back-to-back user agent. 
+
+This allows Asterisk to bridge SIP channels together for example a telecoms provider on one side and an MS Teams Direct Routing channel on the other.
+
+Asterisk implements a SIP channel driver called [PJSIP](https://github.com/pjsip/pjproject). PJSIP is a [GNU GPL](https://www.gnu.org/) [licensed](https://docs.pjsip.org/en/latest/overview/license_pjsip.html), multimedia communication library written in C.
+
+## MS Documentation
+
+[Session Border Controllers certified for Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
+
+[Connect your Session Border Controller (SBC) to Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-connect-the-sbc)
+
+
+
 ## To Do
 
 - Fix email option for SSL provisioning
