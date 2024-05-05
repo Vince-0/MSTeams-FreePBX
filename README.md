@@ -4,7 +4,7 @@
 Compiles Asterisk from source for a modified PJSIP NAT module compatible with MSTeams and install into FreePBX Asterisk.
 Install Letsencrypt SSL using acme.sh
   
-Author https://github.com/Vince-0
+Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
 ### Requires: 
 FreePBX 
