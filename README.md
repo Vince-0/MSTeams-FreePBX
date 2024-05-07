@@ -80,7 +80,7 @@ Asterisk under FreePBX is an easy way to connect a SIP SBC to MS Teams but any S
 
 ## MS Documentation
 
-[Plan Direct Routing]([https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
+[Plan Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
 
 [Configure Voice Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-configure#configure-voice-routing)
 
