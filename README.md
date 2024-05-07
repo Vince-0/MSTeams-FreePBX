@@ -4,7 +4,6 @@
 Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
 Compile Asterisk from source for a modified PJSIP NAT module and install into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
-Installs Letsencrypt SSL using acme.sh
   
 ## Requires
 FreePBX. Usually installed from https://github.com/FreePBX/sng_freepbx_debian_install
@@ -42,9 +41,9 @@ Use at your own risk.
 
 ## Why
 
-Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with Direct Routing
+Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
 
-MS Teams does not oficially support Asterisk as an SBC to connect VOIP services to MS Teams Direct Routing but SIP is SIP.
+MS Teams does not oficially support Asterisk as an SBC to connect VOIP services to MS Teams Direct Routing but SIP is SIP and each implementation is almost close enough to work out of the box.
 
 MS Teams uses an implementation of Session Initiation Protocol and [Asterisk](https://www.asterisk.org/) is a SIP back-to-back user agent. 
 
@@ -52,13 +51,38 @@ This allows Asterisk to bridge SIP channels together for example a telecoms prov
 
 Asterisk implements a SIP channel driver called [PJSIP](https://github.com/pjsip/pjproject). PJSIP is a [GNU GPL](https://www.gnu.org/) [licensed](https://docs.pjsip.org/en/latest/overview/license_pjsip.html), multimedia communication library written in C.
 
+By default the PJSIP NAT module does not present a FQDN in the CONTACT and VIA SIP headers so one can change this behavior in the module's source code.
+
+Asterisk under FreePBX is an easy way to connect a SIP SBC to MS Teams but any SIP switch/proxy could do it like FreeSwitch or Kamailio.
+
+## How
+
+1. Prepare and install a custom PJSIP NAT module for Asterisk under FreePBX.
+
+2. Configure TLS certificates from [LetsEncrypt](https://letsencrypt.org/) using (acme.sh)[https://github.com/acmesh-official/acme.sh] for Asterisk. This requires a publicly accessible DNS FQDN on your server, you might use a DNS provider like [Duck DNS](https://www.duckdns.org) 
+
+3. Use FreePBX to control Asterisk dialplan to route calls in and out of MS Teams and any SIP connection like a telecoms carrier.
+
+4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
+   
+
+## Reference Links
+
+[Asterisk Developer Mail List](https://asterisk-dev.digium.narkive.com/ucZYhaLE/asterisk-16-pjsip-invite-contact-field-and-fqdn#post12)
+
+[Nick Bouwhuis](https://nick.bouwhuis.net/posts/2022-01-02-asterisk-as-a-teams-sbc)
+
+[Ayonik](https://www.ayonik.de/blog/item/90-microsoft-teams-direct-routing-with-asterisk-pbx)
+
+[godril at Otakudang.org](https://www.otakudang.org/?p=969)
+
+
+
 ## MS Documentation
 
-[Session Border Controllers certified for Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
+[Plan Direct Routing]([https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
 
-[Connect your Session Border Controller (SBC) to Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-connect-the-sbc)
-
-
+[Configure Voice Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-configure#configure-voice-routing)
 
 ## To Do
 
