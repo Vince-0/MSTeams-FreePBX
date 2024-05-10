@@ -3,7 +3,7 @@
 
 Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
-Compile Asterisk from source for a modified PJSIP NAT module and install into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
+This script compiles Asterisk from source for a modified PJSIP NAT module and install into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls. It can also download a precompiled version from this repo.
   
 ## Requires
 FreePBX. Usually installed from https://github.com/FreePBX/sng_freepbx_debian_install
@@ -104,4 +104,5 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 - Fix email option for SSL provisioning
 - Asterisk version options
+- Precompile PJSIP NAT module for verious Asterisk versions
 - Asterisk basic standalone option
