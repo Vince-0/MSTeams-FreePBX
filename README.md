@@ -40,8 +40,13 @@ Copy customized MSTeams compatible PJSIP NAT module back and install.
 Use at your own risk.
 
 ## Why
+<p align="center">
+<img src="https://github.com/Vince-0/MSTeams-FreePBX/blob/9660cbc6282b76b1156d93897cc81612802bca68/MSTEAMS-Asterisk.png" />
+</p>
 
-![alt text](https://github.com/Vince-0/MSTeams-FreePBX/blob/9660cbc6282b76b1156d93897cc81612802bca68/MSTEAMS-Asterisk.png "MS Teams Asterisk Basic")
+<p align="center">
+<img src="https://github.com/Vince-0/MSTeams-FreePBX/blob/bfe585223027dddd8220907ff325088090d5cb41/MSTeams-dialpad2.png" />
+</p>
 
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
 
@@ -70,7 +75,8 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 3. Use FreePBX to control Asterisk dialplan to route calls in and out of MS Teams and any SIP connection like a telecoms carrier.
 
 4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
-   
+
+
 
 ## Reference Links
 
