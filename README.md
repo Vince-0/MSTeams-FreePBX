@@ -53,7 +53,11 @@ Asterisk implements a SIP channel driver called [PJSIP](https://github.com/pjsip
 
 By default the PJSIP NAT module does not present a FQDN in the CONTACT and VIA SIP headers so one can change this behavior in the module's source code.
 
-Asterisk under FreePBX is an easy way to connect a SIP SBC to MS Teams but any SIP switch/proxy could do it like FreeSwitch or Kamailio.
+Asterisk under FreePBX is an easy way to connect a SIP SBC to MS Teams but any SIP switch/proxy like FreeSwitch or Kamailio could do it.
+
+MS Teams can route media (audio) directly between MS Teams users and the SBC to shorten the path media takes, greatly decreasing latency and network hops and so increasing call quality and reliability. This requires an ICE (Interactive Connectivity Establishment) server configured in Asterisk to offer its public IP as a candidate for peer to peer connections for VOIP.
+
+MS Teams offers a number of media codecs for VOIP calls but the best for Internet connections is SILK because it offers forward error correction, is quite tolerant of packet loss and has various bandwidth options.
 
 ## How
 
@@ -83,6 +87,10 @@ Asterisk under FreePBX is an easy way to connect a SIP SBC to MS Teams but any S
 [Plan Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
 
 [Configure Voice Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-configure#configure-voice-routing)
+
+[Media Bypass](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-plan-media-bypass)
+
+
 
 ## To Do
 
