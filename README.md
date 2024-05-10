@@ -41,6 +41,8 @@ Use at your own risk.
 
 ## Why
 
+![alt text](https://github.com/Vince-0/MSTeams-FreePBX/blob/9660cbc6282b76b1156d93897cc81612802bca68/MSTEAMS-Asterisk.png "MS Teams Asterisk Basic")
+
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
 
 MS Teams does not oficially support Asterisk as an SBC to connect VOIP services to MS Teams Direct Routing but SIP is SIP and each implementation is almost close enough to work out of the box.
