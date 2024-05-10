@@ -65,8 +65,8 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 1. Prepare and install a custom PJSIP NAT module for Asterisk under FreePBX.
 
-2. Configure TLS certificates from [LetsEncrypt](https://letsencrypt.org/) using (acme.sh)[https://github.com/acmesh-official/acme.sh] for Asterisk. This requires a publicly accessible DNS FQDN on your server, you might use a DNS provider like [Duck DNS](https://www.duckdns.org) 
-
+2. Configure TLS certificates from [LetsEncrypt](https://letsencrypt.org/) using (acme.sh)[https://github.com/acmesh-official/acme.sh] for Asterisk to provide SRTP encryption on calls. This requires a publicly accessible DNS FQDN on your server.
+  
 3. Use FreePBX to control Asterisk dialplan to route calls in and out of MS Teams and any SIP connection like a telecoms carrier.
 
 4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
