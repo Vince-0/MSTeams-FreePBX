@@ -23,7 +23,7 @@ Asterisk 21
 
 ### Execute
 
-`bash STeams-FreePBX-Install.sh`
+`bash MSTeams-FreePBX-Install.sh`
 
 ### Options
 ```
