@@ -104,5 +104,5 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 - Fix email option for SSL provisioning
 - Asterisk version options
-- Precompile PJSIP NAT module for verious Asterisk versions
+- Precompile PJSIP NAT module for various Asterisk versions
 - Asterisk basic standalone option
