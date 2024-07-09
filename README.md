@@ -15,7 +15,7 @@ Asterisk 21
 ## Usage
 ### Download
 
-`wget https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh`
+`wget https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh](https://raw.githubusercontent.com/Vince-0/MSTeams-FreePBX/main/MSTeams-FreePBX-Install.sh`
 
 ### Permision
 
