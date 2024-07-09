@@ -76,6 +76,13 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
 
+## To Do
+
+- Fix email option for SSL provisioning - currently does not configure SSL properly
+- Asterisk mulitple version options
+- Precompile PJSIP NAT module for mulitple Asterisk versions
+- Asterisk basic standalone option
+
 ## Compiled PJSIP NAT module for Asterisk 21
 
 [Vince-0/MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT)
@@ -91,7 +98,6 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 [godril at Otakudang.org](https://www.otakudang.org/?p=969)
 
 
-
 ## MS Documentation
 
 [Plan Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
@@ -102,9 +108,4 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 
 
-## To Do
 
-- Fix email option for SSL provisioning
-- Asterisk version options
-- Precompile PJSIP NAT module for various Asterisk versions
-- Asterisk basic standalone option
