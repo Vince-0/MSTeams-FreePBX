@@ -76,7 +76,9 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
 
+## Compiled PJSIP NAT module for Asterisk 21
 
+[Vince-0/MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT)
 
 ## Reference Links
 
