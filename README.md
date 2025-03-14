@@ -3,6 +3,7 @@
 
 Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
+## What?
 This [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source for a modified PJSIP NAT module and installs into Asterisk for use under FreePBX to act as an SBC for MS Teams Direct Routing VOIP calls. It can also download a precompiled version from this [repo](https://github.com/Vince-0/MSTeams-PJSIPNAT).
   
 ## Requires
@@ -39,7 +40,7 @@ Copy customized MSTeams compatible PJSIP NAT module back and install.
 
 Use at your own risk.
 
-## Why
+## Why?
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
 <p align="center">
 <img src="https://github.com/Vince-0/MSTeams-FreePBX/blob/9660cbc6282b76b1156d93897cc81612802bca68/MSTEAMS-Asterisk.png" />
@@ -77,7 +78,7 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 4. Configure MS Teams, with the appropriate "Phone System" licenses, to use MS Teams Direct Routing for your tenant's users via this Asterisk as an SBC.
 
-## To Do
+## Further Development
 
 - Fix email option for SSL provisioning - currently does not configure SSL properly
 - Asterisk mulitple version options
