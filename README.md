@@ -1,10 +1,10 @@
-# MSTeams-FreePBX
-## MS Teams Direct Routing compatible PJSIP NAT module for Asterisk under FreePBX
+# VOIP Microsoft Teams Gateway
+Connect phone VOIP calls from MS Teams using Direct Routing compatible PJSIP NAT module for Asterisk under FreePBX.
 
 Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
 ## What?
-This [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source for a modified PJSIP NAT module and installs into Asterisk for use under FreePBX to act as an SBC for MS Teams Direct Routing VOIP calls. It can also download a precompiled version from this [repo](https://github.com/Vince-0/MSTeams-PJSIPNAT).
+This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source for a modified PJSIP NAT module and installs into Asterisk for use under FreePBX to act as an SBC for MS Teams Direct Routing VOIP calls. It can also download a precompiled version from this [repo](https://github.com/Vince-0/MSTeams-PJSIPNAT).
   
 ## Requires
 FreePBX. Usually installed from https://github.com/FreePBX/sng_freepbx_debian_install
