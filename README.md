@@ -3,6 +3,8 @@ Connect phone VOIP calls from MS Teams using Direct Routing compatible PJSIP NAT
 
 Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
+Use at your own risk.
+
 ## What?
 This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source for a modified PJSIP NAT module and installs into Asterisk for use under FreePBX to act as an SBC for MS Teams Direct Routing VOIP calls. It can also download a precompiled version from this [repo](https://github.com/Vince-0/MSTeams-PJSIPNAT).
   
@@ -37,8 +39,6 @@ Copy original PJSIP NAT module back and install.
 --copyback
 Copy customized MSTeams compatible PJSIP NAT module back and install.
 ```
-
-Use at your own risk.
 
 ## Why?
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
