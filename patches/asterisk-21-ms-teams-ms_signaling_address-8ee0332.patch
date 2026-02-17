@@ -1,0 +1,75 @@
+diff -ruN a/include/asterisk/res_pjsip.h b/include/asterisk/res_pjsip.h
+--- a/include/asterisk/res_pjsip.h	2026-02-17 15:18:10.136325762 +1100
++++ b/include/asterisk/res_pjsip.h	2026-02-17 15:18:40.488972661 +1100
+@@ -236,6 +236,8 @@
+ 		AST_STRING_FIELD(external_media_address);
+ 		/*! Optional domain to use for messages if provided could not be found */
+ 		AST_STRING_FIELD(domain);
++		/*! Optional signalling domain name for MS Teams (FQDN) */
++		AST_STRING_FIELD(ms_signaling_address);
+ 		);
+ 	/*! Type of transport */
+ 	enum ast_transport type;
+diff -ruN a/res/res_pjsip/config_transport.c b/res/res_pjsip/config_transport.c
+--- a/res/res_pjsip/config_transport.c	2026-02-17 15:18:10.136325762 +1100
++++ b/res/res_pjsip/config_transport.c	2026-02-17 15:18:40.492972746 +1100
+@@ -1828,8 +1828,9 @@
+ 	ast_sorcery_object_field_register(sorcery, "transport", "password", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, password));
+ 	ast_sorcery_object_field_register(sorcery, "transport", "external_signaling_address", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, external_signaling_address));
+ 	ast_sorcery_object_field_register(sorcery, "transport", "external_signaling_port", "0", OPT_UINT_T, PARSE_IN_RANGE, FLDSET(struct ast_sip_transport, external_signaling_port), 0, 65535);
+-	ast_sorcery_object_field_register(sorcery, "transport", "external_media_address", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, external_media_address));
+-	ast_sorcery_object_field_register(sorcery, "transport", "domain", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, domain));
++		ast_sorcery_object_field_register(sorcery, "transport", "external_media_address", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, external_media_address));
++		ast_sorcery_object_field_register(sorcery, "transport", "domain", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, domain));
++		ast_sorcery_object_field_register(sorcery, "transport", "ms_signaling_address", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_transport, ms_signaling_address));
+ 	ast_sorcery_object_field_register_custom(sorcery, "transport", "verify_server", "", transport_tls_bool_handler, verify_server_to_str, NULL, 0, 0);
+ 	ast_sorcery_object_field_register_custom(sorcery, "transport", "verify_client", "", transport_tls_bool_handler, verify_client_to_str, NULL, 0, 0);
+ 	ast_sorcery_object_field_register_custom(sorcery, "transport", "require_client_cert", "", transport_tls_bool_handler, require_client_cert_to_str, NULL, 0, 0);
+diff -ruN a/res/res_pjsip_nat.c b/res/res_pjsip_nat.c
+--- a/res/res_pjsip_nat.c	2026-02-17 15:18:10.140325847 +1100
++++ b/res/res_pjsip_nat.c	2026-02-17 15:18:40.492972746 +1100
+@@ -353,6 +353,9 @@
+ 
+ 	if (!ast_sockaddr_isnull(&transport_state->external_signaling_address)) {
+ 		pjsip_cseq_hdr *cseq = PJSIP_MSG_CSEQ_HDR(tdata->msg);
++		const char *signaling_host = (transport->ms_signaling_address && transport->ms_signaling_address[0]) ?
++			transport->ms_signaling_address :
++			ast_sockaddr_stringify_host(&transport_state->external_signaling_address);
+ 
+ 		/* Update the Contact header with the external address. We only do this if
+ 		 * a CSeq is not present (which should not happen - but we are extra safe),
+@@ -361,14 +364,14 @@
+ 		 * as the Contact headers would contain the registered Contacts, and not our
+ 		 * own Contact. Nor do we do it for a 302 response to an INVITE request.
+ 		 */
+-		if ((!cseq || tdata->msg->type == PJSIP_REQUEST_MSG ||
+-			pjsip_method_cmp(&cseq->method, &pjsip_register_method)) &&
+-			(tdata->msg->type != PJSIP_RESPONSE_MSG ||
+-			pjsip_method_cmp(&cseq->method, &pjsip_invite_method) ||
+-			tdata->msg->line.status.code != PJSIP_SC_MOVED_TEMPORARILY )) {
++			if ((!cseq || tdata->msg->type == PJSIP_REQUEST_MSG ||
++				pjsip_method_cmp(&cseq->method, &pjsip_register_method)) &&
++				(tdata->msg->type != PJSIP_RESPONSE_MSG ||
++				pjsip_method_cmp(&cseq->method, &pjsip_invite_method) ||
++				tdata->msg->line.status.code != PJSIP_SC_MOVED_TEMPORARILY )) {
+ 			/* We can only rewrite the URI when one is present */
+-			if (uri || (uri = ast_sip_get_contact_sip_uri(tdata))) {
+-				pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));
++				if (uri || (uri = ast_sip_get_contact_sip_uri(tdata))) {
++					pj_strdup2(tdata->pool, &uri->host, signaling_host);
+ 				if (transport->external_signaling_port) {
+ 					uri->port = transport->external_signaling_port;
+ 					ast_debug(4, "Re-wrote Contact URI port to %d\n", uri->port);
+@@ -376,9 +379,9 @@
+ 			}
+ 		}
+ 
+-		/* Update the via header if relevant */
+-		if ((tdata->msg->type == PJSIP_REQUEST_MSG) && (via || (via = pjsip_msg_find_hdr(tdata->msg, PJSIP_H_VIA, NULL)))) {
+-			pj_strdup2(tdata->pool, &via->sent_by.host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));
++			/* Update the via header if relevant */
++			if ((tdata->msg->type == PJSIP_REQUEST_MSG) && (via || (via = pjsip_msg_find_hdr(tdata->msg, PJSIP_H_VIA, NULL)))) {
++				pj_strdup2(tdata->pool, &via->sent_by.host, signaling_host);
+ 			if (transport->external_signaling_port) {
+ 				via->sent_by.port = transport->external_signaling_port;
+ 			}

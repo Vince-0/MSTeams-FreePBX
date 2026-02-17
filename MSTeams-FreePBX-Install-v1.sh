@@ -40,10 +40,6 @@ ASTERISK_SAMPLES_INSTALLED=false
 ASTERISK_SERVICE_CREATED=false
 ASTERISK_SERVICE_ENABLED=false
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AST_PATCH_DIR="${SCRIPT_DIR}/patches"
-CLI_FQDN=""
-
 ##PREPARE
 mkdir -p '/var/log/pbx/'
 echo "" > $log
@@ -69,8 +65,7 @@ show_help() {
 	    echo "  --dry-run        Show what actions would be taken (including selected Asterisk version and URLs) without making any changes"
 	    echo "  --debug          Alias for --dry-run"
 	    echo "  --email <addr>   Email address to use for Let's Encrypt SSL; avoids interactive prompt"
-		    echo "  --fqdn <name>    Override detected host FQDN (used for SSL and ms_signaling_address examples)"
-		    echo "  --no-ssl         Skip Let's Encrypt / SSL installation step"
+	    echo "  --no-ssl         Skip Let's Encrypt / SSL installation step"
 	    echo "  --asterisk-only  Install Asterisk from source without FreePBX (standalone basic Asterisk-only install)"
 	    echo "  -h, --help       Show this help message and exit"
 	}
@@ -417,19 +412,6 @@ ASTVERSION_FROM_CLI=false
 		                        SSL_EMAIL="${1#*=}"
 		                        shift # past argument
 		                        ;;
-		                --fqdn)
-		                        if [[ -n "$2" && "$2" != -* ]]; then
-		                            CLI_FQDN="$2"
-		                            shift 2
-		                        else
-		                            echo "Error: --fqdn requires a value (e.g. --fqdn sbc.example.com)" >&2
-		                            exit 1
-		                        fi
-		                        ;;
-		                --fqdn=*)
-		                        CLI_FQDN="${1#*=}"
-		                        shift # past argument
-		                        ;;
 		                --no-ssl|--skip-ssl)
 		                        SKIP_SSL=true
 		                        shift # past argument
@@ -485,25 +467,21 @@ fi
 
 ##MAIN FUNCTIONS
 
-#Check for host FQDN (used for SSL and recommended ms_signaling_address examples)
+#Check for host FQDN
 checkfqdn() {
-	        if [[ -n "$CLI_FQDN" ]]; then
-	                FQDN="$CLI_FQDN"
-	                message "Using FQDN override from --fqdn: '${FQDN}'"
-	        else
-	                FQDN=$(hostname)
-	                message "No --fqdn override supplied; using system hostname '${FQDN}'"
-	        fi
-
-	        if [[ "$FQDN" == *.* ]]; then
-	          message "FQDN '${FQDN}' appears valid (contains a dot)."
-	          message "Proceeding."
-	        else
-	          message "ERROR: FQDN '${FQDN}' does not look valid (no dot)."
-	          message "Please configure a proper FQDN hostname or supply one with --fqdn."
-	          terminate
-	        fi
-	}
+        FQDN=$(hostname)
+        message "Check if this host has a FQDN"
+        if [[ $FQDN == *.* ]]; then
+          message "Hostname '${FQDN}' is a FQDN."
+          message "Proceeding."
+        else
+          message "Hostname '${FQDN}' is not a FQDN."
+          #message "Please configure a FQDN host name and run this script again"
+          #read -p "Input FQDN: " FQDN
+          terminate
+          exit
+        fi
+}
 
 #Copy original PJSIP NAT module back and load
 restore() {
@@ -683,112 +661,40 @@ install_letsencrypt() {
 	       SSL_STATUS="Installed: Let's Encrypt SSL certificate for $FQDN (certs in /etc/asterisk/ssl)"
 }
 
-# Apply MS Teams ms_signaling_address runtime patch to Asterisk PJSIP NAT sources
-get_ms_teams_patch_for_version() {
-		local ver="$1"
-		local patch_path
-
-		patch_path="${AST_PATCH_DIR}/asterisk-${ver}-ms-teams-ms_signaling_address-8ee0332.patch"
-
-		if [[ -f "$patch_path" ]]; then
-				echo "$patch_path"
-				return 0
-		fi
-
-		message "ERROR: No MS Teams ms_signaling_address patch file found for Asterisk version '$ver' at '$patch_path'"
-		message "Supported Asterisk versions for this script: $SUPPORTED_AST_VERSIONS"
-		return 1
-}
-
-apply_ms_teams_runtime_patch() {
-		local src_dir="$1"
-		local ast_version="$2"
-		local patch_file
-
-		if [[ -z "$src_dir" || ! -d "$src_dir" ]]; then
-				message "ERROR: apply_ms_teams_runtime_patch called with invalid source directory '$src_dir'"
-				return 1
-		fi
-
-		if [[ -z "$ast_version" ]]; then
-				message "ERROR: apply_ms_teams_runtime_patch called without Asterisk version."
-				return 1
-		fi
-
-		if ! patch_file="$(get_ms_teams_patch_for_version "$ast_version")"; then
-				return 1
-		fi
-
-		if ! command -v patch >/dev/null 2>&1; then
-				message "patch utility not found; installing via apt-get..."
-				if ! apt-get update || ! apt-get install -y patch; then
-						message "ERROR: Failed to install 'patch' package."
-						return 1
-				fi
-		fi
-
-		message "Testing application of MS Teams ms_signaling_address runtime patch for Asterisk ${ast_version} (file: ${patch_file})..."
-		if ( cd "$src_dir" && patch --dry-run -p1 < "$patch_file" ); then
-				message "MS Teams ms_signaling_address runtime patch applies cleanly; proceeding with application..."
-				if ! ( cd "$src_dir" && patch -p1 < "$patch_file" ); then
-						message "ERROR: Failed to apply ms_signaling_address runtime patch in $src_dir."
-						return 1
-				fi
-		elif ( cd "$src_dir" && patch -R --dry-run -p1 < "$patch_file" ); then
-				message "MS Teams ms_signaling_address runtime patch already applied in $src_dir; skipping."
-		else
-				message "ERROR: ms_signaling_address runtime patch does not apply cleanly to sources in $src_dir."
-				message "Ensure you are building a supported Asterisk version: $SUPPORTED_AST_VERSIONS"
-				return 1
-		fi
-
-		message "MS Teams ms_signaling_address runtime patch is present and up to date."
-		return 0
-}
-
 #Compile custom Asterisk with PJSIP NAT module and load
 build_msteams() {
         ASTVERSION=$1
         SRCDIR="/usr/src"
 
         checkfqdn
-	
-	        # Clean up any previous Asterisk source tree for this version to make the script idempotent
-	        local prev_src_dirs=("$SRCDIR"/asterisk-"${ASTVERSION}".*)
-	        if [[ -e "${prev_src_dirs[0]}" ]]; then
-	                message "Removing existing Asterisk source tree(s) in $SRCDIR/asterisk-${ASTVERSION}.* for clean rebuild..."
-	                rm -rf "$SRCDIR"/asterisk-"${ASTVERSION}".*
-	        fi
-	
-	        # Get source
+
+        # Get source
+        message "Download Asterisk source code tarball..."
 	        cd "$SRCDIR"
+	        wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
+
+        # Extract the tarball
+        message "Extracting Asterisk source tarball..."
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
+	        tar -xzf "$SRCDIR/$TARBALL"
 
-	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
-	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
-	        else
-	                message "Downloading Asterisk source code tarball..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/$TARBALL"
-	        fi
-
-	        # Extract the tarball
-	        message "Extracting Asterisk source tarball..."
-		        tar -xzf "$SRCDIR/$TARBALL"
-	
-		        # Navigate to extracted directory
-		        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
+	        # Navigate to extracted directory
+	        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
 
         # Install dependencies
         message "Installing dependencies..."
         contrib/scripts/install_prereq install
 
-	        # Apply MS Teams runtime FQDN patch (ms_signaling_address) to PJSIP NAT
-	        if ! apply_ms_teams_runtime_patch "$PWD" "$ASTVERSION"; then
-	                message "ERROR: Failed to apply MS Teams runtime patch to Asterisk sources."
-	                terminate 1
-	        fi
+        # Mod PJSIP channel driver res/res_pjsip_nat.c
+        #- pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));
+        #+ pj_strdup2(tdata->pool, &uri->host, "FQDN");
+        sed -i "s/pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));/pj_strdup2(tdata->pool, \&uri->host, \"$FQDN\");/g" res/res_pjsip_nat.c
 
-	        # Configure Asterisk with default module set
+        #- pj_strdup2(tdata->pool, &via->sent_by.host, ast_sockaddr_stringify_host(&transport_state->external_s>
+        #+ pj_strdup2(tdata->pool, &via->sent_by.host, "FQDN");
+        sed -i "s/pj_strdup2(tdata->pool, &via->sent_by.host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));/pj_strdup2(tdata->pool, \&via->sent_by.host, \"$FQDN\");/g" res/res_pjsip_nat.c
+
+        # Configure Asterisk with default module set
         message "Configuring Asterisk with default menuselect options..."
         ./configure
 
@@ -801,17 +707,13 @@ build_msteams() {
         lib_path=$(get_lib_path)
         modules_dir="$lib_path/asterisk/modules"
 
-	        message "Copy custom res_pjsip_nat.so to FreePBX Asterisk $modules_dir"
-	        #make install
-	        #ldconfig
-	
-	        # Move and replace res_pjsip_nat.so, keeping a one-time backup of the original
-	        if [[ -f "$modules_dir/res_pjsip_nat.so" && ! -f "$modules_dir/res_pjsip_nat.so.ORIG" ]]; then
-	                mv "$modules_dir/res_pjsip_nat.so" "$modules_dir/res_pjsip_nat.so.ORIG"
-	        else
-	                message "res_pjsip_nat.so.ORIG already exists in $modules_dir; leaving existing backup in place."
-	        fi
-	        cp -v res/res_pjsip_nat.so "$modules_dir/"
+        message "Copy custom res_pjsip_nat.so to FreePBX Asterisk $modules_dir"
+        #make install
+        #ldconfig
+
+        #Move and replace res_pjsip_nat.so
+        mv "$modules_dir/res_pjsip_nat.so" "$modules_dir/res_pjsip_nat.so.ORIG"
+        cp -v res/res_pjsip_nat.so "$modules_dir/"
 	asterisk -rx 'module unload res_pjsip_nat.so'
 	asterisk -rx 'module load res_pjsip_nat.so'
 
@@ -863,27 +765,15 @@ build_asterisk_only() {
 	        SRCDIR="/usr/src"
 
 	        checkfqdn
-	
-	        # Clean up any previous Asterisk source tree for this version to make the script idempotent
-	        local prev_src_dirs=("$SRCDIR"/asterisk-"${ASTVERSION}".*)
-	        if [[ -e "${prev_src_dirs[0]}" ]]; then
-	                message "Removing existing Asterisk source tree(s) in $SRCDIR/asterisk-${ASTVERSION}.* for clean rebuild..."
-	                rm -rf "$SRCDIR"/asterisk-"${ASTVERSION}".*
-	        fi
-	
+
+	        message "Download Asterisk source code tarball for standalone install..."
 	        cd "$SRCDIR"
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
-
-	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
-	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
-	        else
-	                message "Downloading Asterisk source code tarball for standalone install..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
-	        fi
+	        wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
 
 	        message "Extracting Asterisk source tarball..."
 	        tar -xzf "$SRCDIR/$TARBALL"
-	
+
 	        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
 
 	        message "Installing dependencies for standalone Asterisk build..."
@@ -907,13 +797,11 @@ build_asterisk_only() {
 	        message "Configuration base directory: $ASTERISK_SYSCONFDIR"
 	        message "Local state base directory: $ASTERISK_LOCALSTATEDIR"
 
-		# Apply MS Teams runtime FQDN patch (ms_signaling_address) to PJSIP NAT
-		if ! apply_ms_teams_runtime_patch "$PWD" "$ASTVERSION"; then
-		        message "ERROR: Failed to apply MS Teams runtime patch to Asterisk sources (standalone install)."
-		        terminate 1
-		fi
+	        # Patch PJSIP NAT source to hard-code FQDN
+	        sed -i "s/pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));/pj_strdup2(tdata->pool, \&uri->host, \"$FQDN\");/g" res/res_pjsip_nat.c
+	        sed -i "s/pj_strdup2(tdata->pool, &via->sent_by.host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));/pj_strdup2(tdata->pool, \&via->sent_by.host, \"$FQDN\");/g" res/res_pjsip_nat.c
 
-		message "Configuring Asterisk for standalone install..."
+	        message "Configuring Asterisk for standalone install..."
 	        ./configure --prefix="$ASTERISK_PREFIX" --sysconfdir="$ASTERISK_SYSCONFDIR" --localstatedir="$ASTERISK_LOCALSTATEDIR"
 
 	        message "Compiling Asterisk (standalone)..."
@@ -976,8 +864,8 @@ print_asterisk_only_summary() {
 	        message "  - Module directory (expected): ${modules_dir}"
 	        message "  - Systemd service created: ${ASTERISK_SERVICE_CREATED}"
 	        message "  - Systemd service enabled: ${ASTERISK_SERVICE_ENABLED}"
-		message "  - Sample configuration files installed: ${ASTERISK_SAMPLES_INSTALLED}"
-		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${FQDN}"
+	        message "  - Sample configuration files installed: ${ASTERISK_SAMPLES_INSTALLED}"
+	        message "  - FQDN hardcoded into res_pjsip_nat.c: ${FQDN}"
 	        message "  - Let's Encrypt SSL: ${SSL_STATUS}"
 	        if [[ "$SSL_STATUS" == Installed:* ]]; then
 	                message "    - Full chain certificate: /etc/asterisk/ssl/cert.crt"
@@ -985,27 +873,9 @@ print_asterisk_only_summary() {
 	                message "    - Private key:            /etc/asterisk/ssl/privkey.crt"
 	                message "    - acme.sh client:         /root/.acme.sh (handles automatic certificate renewal)"
 	        fi
-	        message ""
-	        message "PJSIP transport configuration for MS Teams Direct Routing:"
-	        message "  Edit ${config_dir}/pjsip.conf and add or update your transport section with:"
-	        message ""
-	        message "  [transport-ms-teams]"
-	        message "  type=transport"
-	        message "  protocol=tls"
-	        message "  bind=0.0.0.0:5061"
-	        message "  external_signaling_address=YOUR.PUBLIC.IP    ; Public IP address of your SBC"
-	        message "  external_signaling_port=5061                 ; External SIP TLS port"
-	        message "  ms_signaling_address=${FQDN}                 ; FQDN hostname (e.g., sbc.example.com)"
-	        message ""
-	        message "  Replace YOUR.PUBLIC.IP with your actual public IP address."
-	        message "  IMPORTANT: ms_signaling_address must be set to a FQDN hostname (not an IP address)."
-	        message "  This FQDN must match your TLS certificate and MS Teams SBC configuration."
-	        message ""
 	        message "Next steps:"
-	        message "  1. Review and customise your Asterisk configuration in ${config_dir}"
-	        message "  2. REQUIRED: Configure ms_signaling_address hostname in ${config_dir}/pjsip.conf as shown above"
-	        message "  3. Start Asterisk with: systemctl start asterisk   (if systemd service was created)"
-	        message "  4. Reload PJSIP after config changes: asterisk -rx 'pjsip reload'"
+	        message "  - Review and customise your Asterisk configuration in ${config_dir}"
+	        message "  - Start Asterisk with: systemctl start asterisk   (if systemd service was created)"
 }
 
 print_freepbx_summary() {
@@ -1016,7 +886,7 @@ print_freepbx_summary() {
 	        message "MSTeams-FreePBX installation summary:"
 	        message "  - Host: ${host}"
 	        message "  - Asterisk version targeted: ${ASTVERSION}"
-		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${FQDN}"
+	        message "  - FQDN hardcoded into res_pjsip_nat.c: ${FQDN}"
 	        message "  - FreePBX Asterisk modules directory: ${modules_dir}"
 	        message "  - Active PJSIP NAT module: ${modules_dir}/res_pjsip_nat.so"
 	        message "  - Original PJSIP NAT backup (if present): ${modules_dir}/res_pjsip_nat.so.ORIG"
@@ -1032,27 +902,8 @@ print_freepbx_summary() {
 		        fi
 	        fi
 	        message "  - Systemd services: existing FreePBX/Asterisk services were not modified by this script"
-	        message ""
-	        message "PJSIP transport configuration for MS Teams Direct Routing:"
-	        message "  In FreePBX, add a custom PJSIP transport configuration file:"
-	        message "  /etc/asterisk/pjsip.transports_custom.conf"
-	        message ""
-	        message "  [transport-ms-teams]"
-	        message "  type=transport"
-	        message "  protocol=tls"
-	        message "  bind=0.0.0.0:5061"
-	        message "  external_signaling_address=YOUR.PUBLIC.IP    ; Public IP address of your SBC"
-	        message "  external_signaling_port=5061                 ; External SIP TLS port"
-	        message "  ms_signaling_address=${FQDN}                 ; FQDN hostname (e.g., sbc.example.com)"
-	        message ""
-	        message "  Replace YOUR.PUBLIC.IP with your actual public IP address."
-	        message "  IMPORTANT: ms_signaling_address must be set to a FQDN hostname (not an IP address)."
-	        message "  This FQDN must match your TLS certificate and MS Teams SBC configuration."
-	        message ""
 	        message "Next steps:"
-	        message "  1. REQUIRED: Configure ms_signaling_address hostname in /etc/asterisk/pjsip.transports_custom.conf as shown above"
-	        message "  2. Restart FreePBX services: fwconsole restart"
-	        message "  3. Verify PJSIP transport loaded: asterisk -rx 'pjsip show transports'"
+	        message "  - FreePBX: fwconsole restart (this script will now run it)"
 	}
 
 ##START RUN
@@ -1151,15 +1002,11 @@ trap 'terminate 143' TERM
 	       local lib_path fqdn_display mode_desc ssl_desc
 	       lib_path=$(get_lib_path)
 
-	       # Get FQDN for display (used for SSL and ms_signaling_address examples)
-	       if [[ "$restore" == true || "$copyback" == true ]]; then
+	       # Get FQDN for display (needed for operations that patch PJSIP NAT)
+	       if [[ "$downloadonly" == true || "$restore" == true || "$copyback" == true ]]; then
 	           fqdn_display="N/A (not needed for this operation)"
 	       else
-	           if [[ -n "$CLI_FQDN" ]]; then
-	               fqdn_display="$CLI_FQDN"
-	           else
-	               fqdn_display="$(hostname)"
-	           fi
+	           fqdn_display=$(hostname)
 	       fi
 
 	       # Determine operation mode description
@@ -1198,7 +1045,7 @@ trap 'terminate 143' TERM
 	       if [[ "$ASTERISK_ONLY" == true ]]; then
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would download and extract: $tarurl"
-	               message "  Would apply the MS Teams ms_signaling_address runtime patch to res/res_pjsip_nat.c (runtime-configurable FQDN via pjsip.conf)."
+	               message "  Would patch res/res_pjsip_nat.c to hard-code the server FQDN into CONTACT/VIA headers."
 	               message "  Would run ./configure with a chosen installation prefix (default: /usr, configs in /etc, data in /var)."
 	               message "  Would run make && make install to install Asterisk into the chosen prefix."
 	               message "  Would optionally create and enable a systemd service at /etc/systemd/system/asterisk.service."
@@ -1214,7 +1061,7 @@ trap 'terminate 143' TERM
 	       else
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would download and extract: $tarurl"
-	               message "  Would apply the MS Teams ms_signaling_address runtime patch to res/res_pjsip_nat.c (runtime-configurable FQDN via pjsip.conf)."
+	               message "  Would patch res/res_pjsip_nat.c to hard-code the server FQDN into CONTACT/VIA headers."
 	               message "  Would compile Asterisk and copy res_pjsip_nat.so into the FreePBX modules directory"
 	       fi
 	       message "DRY-RUN: Exiting without making any changes."
@@ -1275,5 +1122,7 @@ trap 'terminate 143' TERM
 		else
 		        print_freepbx_summary
 		        message "Finished MSTeams-FreePBX-Install process for $host $kernel"
+		        message "fwconsole restart"
+		        fwconsole restart
 		fi
 	terminate
