@@ -209,12 +209,18 @@ Operating system version and distribution options.
 
 ## Reference Links
 
-## Run Time Patch
+### Run Time Patch
 
 [Jose's](https://github.com/eagle26) run time [patch](https://github.com/asterisk/asterisk/compare/master...eagle26:asterisk:master)
 
+### Related projects
 
-## Build Time Patch (Old Method)
+For automated installation and building from source, see:
+
+- [MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT) - Compiled res_pjsip_nat.so modules for Debian.
+
+
+### Build Time Patch (Old Method)
 
 [Vince-0/MSTeams-FreePBX](https://raw.githubusercontent.com/Vince-0/MSTeams-FreePBX/refs/heads/main/README-v1.md)
 
@@ -227,7 +233,7 @@ Operating system version and distribution options.
 [godril at Otakudang.org](https://www.otakudang.org/?p=969)
 
 
-## MS Documentation
+### MS Documentation
 
 [Plan Direct Routing](https://learn.microsoft.com/en-us/microsoftteams/direct-routing-border-controllers)
 

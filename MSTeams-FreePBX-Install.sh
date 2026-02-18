@@ -48,6 +48,53 @@ CLI_FQDN=""
 mkdir -p '/var/log/pbx/'
 echo "" > $log
 
+# Check for wget prerequisite (needed for downloading patches and Asterisk tarballs)
+if ! command -v wget >/dev/null 2>&1; then
+	echo "wget utility not found; installing via apt-get..."
+	if ! apt-get update || ! apt-get install -y wget; then
+		echo "ERROR: Failed to install 'wget' package."
+		exit 1
+	fi
+fi
+
+# Ensure patches directory exists and download patch files if needed
+GITHUB_PATCHES_BASE_URL="https://raw.githubusercontent.com/Vince-0/MSTeams-FreePBX/main/patches"
+
+if [[ ! -d "$AST_PATCH_DIR" ]]; then
+	echo "Creating patches directory at: $AST_PATCH_DIR"
+	mkdir -p "$AST_PATCH_DIR"
+fi
+
+# Download patch files from GitHub if they don't exist locally
+download_patch_file() {
+	local version="$1"
+	local patch_file="asterisk-${version}-ms-teams-ms_signaling_address-8ee0332.patch"
+	local local_path="${AST_PATCH_DIR}/${patch_file}"
+	local remote_url="${GITHUB_PATCHES_BASE_URL}/${patch_file}"
+
+	if [[ -f "$local_path" ]]; then
+		echo "Patch file for Asterisk ${version} already exists: ${patch_file}"
+	else
+		echo "Downloading patch file for Asterisk ${version} from GitHub..."
+		if wget -q -O "$local_path" "$remote_url"; then
+			echo "Successfully downloaded: ${patch_file}"
+		else
+			echo "ERROR: Failed to download patch file from: $remote_url"
+			echo "Please check your internet connection or download manually from:"
+			echo "https://github.com/Vince-0/MSTeams-FreePBX/tree/main/patches"
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# Download patches for all supported Asterisk versions
+for ast_ver in 21 22 23; do
+	if ! download_patch_file "$ast_ver"; then
+		exit 1
+	fi
+done
+
 #ROOT CHECK
 if [[ $EUID -ne 0 ]]; then
    echo "This script must be run as root"
@@ -728,16 +775,21 @@ apply_ms_teams_runtime_patch() {
 		fi
 
 		message "Testing application of MS Teams ms_signaling_address runtime patch for Asterisk ${ast_version} (file: ${patch_file})..."
-		if ( cd "$src_dir" && patch --dry-run -p1 < "$patch_file" ); then
+		local patch_output
+		if patch_output=$(cd "$src_dir" && patch --dry-run -p1 < "$patch_file" 2>&1); then
 				message "MS Teams ms_signaling_address runtime patch applies cleanly; proceeding with application..."
 				if ! ( cd "$src_dir" && patch -p1 < "$patch_file" ); then
 						message "ERROR: Failed to apply ms_signaling_address runtime patch in $src_dir."
 						return 1
 				fi
-		elif ( cd "$src_dir" && patch -R --dry-run -p1 < "$patch_file" ); then
+		elif ( cd "$src_dir" && patch -R --dry-run -p1 < "$patch_file" >/dev/null 2>&1 ); then
 				message "MS Teams ms_signaling_address runtime patch already applied in $src_dir; skipping."
 		else
 				message "ERROR: ms_signaling_address runtime patch does not apply cleanly to sources in $src_dir."
+				message "Patch file: $patch_file"
+				message "Asterisk version: $ast_version"
+				message "Patch output:"
+				echo "$patch_output" | tee -a "$log"
 				message "Ensure you are building a supported Asterisk version: $SUPPORTED_AST_VERSIONS"
 				return 1
 		fi
