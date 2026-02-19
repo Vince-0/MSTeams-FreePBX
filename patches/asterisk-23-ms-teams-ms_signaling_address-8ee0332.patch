@@ -73,3 +73,37 @@ diff -ruN a/res/res_pjsip_nat.c b/res/res_pjsip_nat.c
  			if (transport->external_signaling_port) {
  				via->sent_by.port = transport->external_signaling_port;
  			}
+--- a/res/res_pjsip/pjsip_config.xml	2026-02-06 03:58:10.000000000 +1100
++++ b/res/res_pjsip/pjsip_config.xml	2026-02-19 23:21:26.898125575 +1100
+@@ -2403,6 +2403,18 @@
+ 					</since>
+ 					<synopsis>External port for SIP signalling</synopsis>
+ 				</configOption>
++				<configOption name="ms_signaling_address">
++					<since>
++						<version>21.0.0</version>
++					</since>
++					<synopsis>MS Teams Direct Routing signalling FQDN</synopsis>
++					<description><para>
++						When set, this FQDN is used instead of <literal>external_signaling_address</literal>
++						in the Contact and Via headers for outgoing SIP messages. Required for Microsoft
++						Teams Direct Routing, where the Contact header must carry a fully qualified
++						domain name rather than an IP address.
++					</para></description>
++				</configOption>
+ 				<configOption name="method">
+ 					<since>
+ 						<version>12.2.0</version>
+
+--- a/res/res_pjsip/pjsip_manager.xml	2026-02-06 03:58:10.000000000 +1100
++++ b/res/res_pjsip/pjsip_manager.xml	2026-02-19 23:21:54.458713080 +1100
+@@ -229,6 +229,9 @@
+ 				<parameter name="Domain">
+ 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='domain']/synopsis/node())"/></para>
+ 				</parameter>
++				<parameter name="MsSignalingAddress">
++					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='ms_signaling_address']/synopsis/node())"/></para>
++				</parameter>
+ 				<parameter name="VerifyServer">
+ 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='transport']/configOption[@name='verify_server']/synopsis/node())"/></para>
+ 				</parameter>
