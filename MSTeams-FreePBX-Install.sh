@@ -4,11 +4,11 @@
 #
 # Use at your own risk.
 #
-# Requires: Debian 12, FreePBX with Asterisk 21, 22 or 23.
+# Requires: Debian 12, FreePBX with Asterisk 21, 22 or 23 (or standalone Asterisk with --asterisk-only).
 #
 # This script does this:
 # Compile Asterisk from source for a modified PJSIP NAT module compatible with MSTeams and install into FreePBX Asterisk.
-# Install Letsencrypt SSL using acme.sh
+# Install Letsencrypt SSL using certbot (preferred) and/or existing certificates
 #
 # Options:
 # --downloadonly: Downloads and installs compiled PJSIP NAT module from Vince-0 github repo and install into FreePBX Asterisk.
@@ -32,6 +32,7 @@ LIB_FROM_CLI=false    # Whether library path was specified via --lib
 SSL_EMAIL=""
 SKIP_SSL=false
 SSL_STATUS="Not requested"
+USE_EXISTING_CERT=false
 ASTERISK_ONLY=false
 ASTERISK_PREFIX=""
 ASTERISK_SYSCONFDIR=""
@@ -115,7 +116,8 @@ show_help() {
 	    echo "  --lib=<path>     Override library path (e.g., /usr/lib/x86_64-linux-gnu). Auto-detected based on architecture if omitted."
 	    echo "  --dry-run        Show what actions would be taken (including selected Asterisk version and URLs) without making any changes"
 	    echo "  --debug          Alias for --dry-run"
-	    echo "  --email <addr>   Email address to use for Let's Encrypt SSL; avoids interactive prompt"
+		    echo "  --email <addr>   Email address to use for Let's Encrypt (required to obtain/renew; not required to use existing certs)"
+		    echo "  --use-existing-cert  Use an existing certificate for the FQDN if found (non-interactive; no issuance/renewal)"
 		    echo "  --fqdn <name>    Override detected host FQDN (used for SSL and ms_signaling_address examples)"
 		    echo "  --no-ssl         Skip Let's Encrypt / SSL installation step"
 	    echo "  --asterisk-only  Install Asterisk from source without FreePBX (standalone basic Asterisk-only install)"
@@ -338,18 +340,7 @@ confirm_run_options() {
 	        mode_desc="FreePBX install + patch for MSTeams PJSIP NAT module"
 	    fi
 
-	    # Determine SSL description
-	    if [[ "$SKIP_SSL" == true ]]; then
-	        ssl_desc="--no-ssl (SSL disabled - required for MSTeams Direct Routing)"
-	    else
-	        if [[ -n "$SSL_EMAIL" ]]; then
-	            ssl_desc="--email=$SSL_EMAIL (SSL enabled)"
-	        else
-	            ssl_desc="Enabled (email will be requested)"
-	        fi
-	    fi
-
-	    # Determine FQDN (only required for modes that patch PJSIP NAT)
+	    # Determine FQDN first (needed for cert detection below)
 	    if [[ "$ASTERISK_ONLY" == true ]]; then
 	        checkfqdn
 	        fqdn_desc="$FQDN"
@@ -359,6 +350,32 @@ confirm_run_options() {
 	        # Default FreePBX patch mode also patches PJSIP NAT
 	        checkfqdn
 	        fqdn_desc="$FQDN"
+	    fi
+
+	    # Determine SSL description, including any existing certificate detection
+	    local ssl_cert_info=""
+	    if [[ "$SKIP_SSL" == true ]]; then
+	        ssl_desc="--no-ssl (SSL disabled - required for MSTeams Direct Routing)"
+	    else
+	        if [[ "$fqdn_desc" != "N/A"* && -n "$FQDN" ]]; then
+	            local _cb_dir="/etc/letsencrypt/live/${FQDN}"
+	            local _ast_ssl="/etc/asterisk/ssl"
+	            local _expiry
+	            if [[ -f "${_cb_dir}/fullchain.pem" && -f "${_cb_dir}/privkey.pem" ]]; then
+	                _expiry=$(openssl x509 -enddate -noout -in "${_cb_dir}/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
+	                ssl_cert_info=" | Found certbot cert: ${_cb_dir} (expires: ${_expiry:-unknown})"
+	            elif [[ -f "${_ast_ssl}/cert.crt" && -f "${_ast_ssl}/privkey.crt" ]]; then
+	                _expiry=$(openssl x509 -enddate -noout -in "${_ast_ssl}/cert.crt" 2>/dev/null | sed 's/notAfter=//')
+	                ssl_cert_info=" | Found existing cert: /etc/asterisk/ssl/ (expires: ${_expiry:-unknown})"
+	            else
+	                ssl_cert_info=" | No existing cert found for ${FQDN}"
+	            fi
+	        fi
+	        if [[ -n "$SSL_EMAIL" ]]; then
+	            ssl_desc="--email=$SSL_EMAIL (SSL enabled)${ssl_cert_info}"
+	        else
+	            ssl_desc="Enabled (email will be requested)${ssl_cert_info}"
+	        fi
 	    fi
 
 	    message "==================================================="
@@ -477,6 +494,10 @@ ASTVERSION_FROM_CLI=false
 		                        CLI_FQDN="${1#*=}"
 		                        shift # past argument
 		                        ;;
+		                --use-existing-cert)
+		                        USE_EXISTING_CERT=true
+		                        shift # past argument
+		                        ;;
 		                --no-ssl|--skip-ssl)
 		                        SKIP_SSL=true
 		                        shift # past argument
@@ -515,18 +536,19 @@ if [[ "$ASTERISK_ONLY" == true ]]; then
 fi
 
 # Collect SSL email early (after argument parsing) for operations that can install SSL.
-# Skip in dry-run mode and for operations that do not perform SSL work (restore/copyback/downloadonly).
-if [[ "$dryrun" != true && "$SKIP_SSL" != true && -z "$SSL_EMAIL" && "$restore" != true && "$copyback" != true && "$downloadonly" != true ]]; then
+# Skip in dry-run mode, when SSL is disabled, when using existing cert (no email needed),
+# or for operations that do not perform SSL work (restore/copyback/downloadonly).
+if [[ "$dryrun" != true && "$SKIP_SSL" != true && "$USE_EXISTING_CERT" != true && -z "$SSL_EMAIL" && "$restore" != true && "$copyback" != true && "$downloadonly" != true ]]; then
 	echo ""
-	echo -n "SSL certificate Email (blank to skip SSL): "
+	echo -n "SSL certificate Email (blank to skip SSL, or press Enter to only use existing certs): "
 	read ssl_email_input
 	message "User SSL email input: '${ssl_email_input:-<blank>}'"
 	if [[ -n "$ssl_email_input" ]]; then
 		SSL_EMAIL="$ssl_email_input"
 		message "SSL email set to: $SSL_EMAIL"
 	else
-		message "No email provided; SSL installation will be skipped."
-		SKIP_SSL=true
+		message "No email provided; will attempt to use existing certificate or skip SSL."
+		USE_EXISTING_CERT=true
 	fi
 fi
 
@@ -614,120 +636,287 @@ downloadonly() {
         asterisk -rx 'module load res_pjsip_nat.so'
 }
 
-#Install SSL from LetsEncrypt using acme.sh
+# Install/configure SSL certificates using certbot (preferred) or existing certificates
 install_letsencrypt() {
-	       local email
-	       local acme_home="/root/.acme.sh"
-	       local acme_cmd="${acme_home}/acme.sh"
-	       local acme_clone_dir="/opt/acme.sh"
-	       local apache_was_running=false
+	local apache_was_running=false
+	local cert_source=""   # where we ultimately get the cert from
+	local existing_cert="" # path to existing fullchain/cert file
+	local existing_key=""  # path to existing private key
 
-		       # SSL_EMAIL should already be set from the early SSL prompt or from the command line
-	       if [[ -z "$SSL_EMAIL" ]]; then
-	               message "ERROR: install_letsencrypt called but SSL_EMAIL is not set. This should not happen."
-	               SSL_STATUS="Skipped: no email provided; no SSL certificates installed"
-	               return 0
-	       fi
+	# ---------------------------------------------------------------
+	# Helper: restart apache2 if it was stopped
+	# ---------------------------------------------------------------
+	_restart_apache2() {
+		if [[ "$apache_was_running" == true ]]; then
+			message "Restarting apache2 service..."
+			if command -v systemctl >/dev/null 2>&1; then
+				systemctl start apache2 || message "WARNING: Failed to restart apache2."
+			elif command -v service >/dev/null 2>&1; then
+				service apache2 start || message "WARNING: Failed to restart apache2 (via service)."
+			fi
+		fi
+	}
 
-	       email="$SSL_EMAIL"
-	       message "Using SSL email: $email"
+	# ---------------------------------------------------------------
+	# Helper: stop apache2 for standalone challenge
+	# ---------------------------------------------------------------
+	_stop_apache2() {
+		if command -v systemctl >/dev/null 2>&1; then
+			if systemctl is-active --quiet apache2; then
+				apache_was_running=true
+				message "Stopping apache2 for standalone challenge..."
+				systemctl stop apache2 || message "WARNING: Failed to stop apache2."
+			fi
+		elif command -v service >/dev/null 2>&1; then
+			if service apache2 status >/dev/null 2>&1; then
+				apache_was_running=true
+				message "Stopping apache2 (via service) for standalone challenge..."
+				service apache2 stop || message "WARNING: Failed to stop apache2 (via service)."
+			fi
+		fi
+	}
 
-	       # Ensure SSL directory exists
-	       if ! mkdir -p /etc/asterisk/ssl; then
-	               message "ERROR: Unable to create /etc/asterisk/ssl directory."
-	               SSL_STATUS="FAILED: unable to create /etc/asterisk/ssl directory"
-	               return 1
-	       fi
+	# ---------------------------------------------------------------
+	# Helper: show certificate expiry for a given cert file
+	# ---------------------------------------------------------------
+	_show_cert_expiry() {
+		local cert_file="$1"
+		if [[ -f "$cert_file" ]] && command -v openssl >/dev/null 2>&1; then
+			local expiry
+			expiry=$(openssl x509 -enddate -noout -in "$cert_file" 2>/dev/null | sed 's/notAfter=//')
+			if [[ -n "$expiry" ]]; then
+				echo "  Certificate expires: $expiry"
+				message "Certificate at $cert_file expires: $expiry"
+			fi
+		fi
+	}
 
-	       # Install acme.sh if not already present
-	       if [[ ! -x "$acme_cmd" ]]; then
-	               message "acme.sh not found at $acme_cmd; installing..."
-	               if ! apt install -y git; then
-	                       message "ERROR: Failed to install git. Cannot continue with Let's Encrypt installation."
-	                       SSL_STATUS="FAILED: could not install git dependency for acme.sh"
-	                       return 1
-	               fi
+	# ---------------------------------------------------------------
+	# Helper: copy cert files from a source dir into /etc/asterisk/ssl
+	# Expects: fullchain.pem / cert.pem, privkey.pem in $1
+	# ---------------------------------------------------------------
+	_install_certs_from_dir() {
+		local src="$1"
+		local fullchain key
 
-	               if [[ -d "$acme_clone_dir" ]]; then
-	                       message "Removing existing temporary acme.sh clone at $acme_clone_dir"
-	                       rm -rf "$acme_clone_dir"
-	               fi
+		# Prefer fullchain, fall back to cert
+		if [[ -f "${src}/fullchain.pem" ]]; then
+			fullchain="${src}/fullchain.pem"
+		elif [[ -f "${src}/cert.pem" ]]; then
+			fullchain="${src}/cert.pem"
+		else
+			message "ERROR: No cert/fullchain.pem found in $src"
+			return 1
+		fi
 
-	               if ! git clone https://github.com/acmesh-official/acme.sh.git "$acme_clone_dir"; then
-	                       message "ERROR: Failed to clone acme.sh repository."
-	                       SSL_STATUS="FAILED: git clone of acme.sh repository failed"
-	                       return 1
-	               fi
+		key="${src}/privkey.pem"
+		if [[ ! -f "$key" ]]; then
+			message "ERROR: No privkey.pem found in $src"
+			return 1
+		fi
 
-	               if ! ( cd "$acme_clone_dir" && ./acme.sh --install -m "$email" ); then
-	                       message "ERROR: acme.sh installation failed."
-	                       SSL_STATUS="FAILED: acme.sh installation failed"
-	                       return 1
-	               fi
-	       else
-	               message "acme.sh already installed at $acme_cmd; skipping installation."
-	       fi
+		cp -v "$fullchain" /etc/asterisk/ssl/cert.crt
+		cp -v "$key"       /etc/asterisk/ssl/privkey.crt
+		# ca.crt = same as fullchain for Asterisk TLS
+		cp -v "$fullchain" /etc/asterisk/ssl/ca.crt
+		message "Certificates copied from $src to /etc/asterisk/ssl/"
+	}
 
-	       if [[ ! -x "$acme_cmd" ]]; then
-	               message "ERROR: acme.sh binary not found at $acme_cmd even after installation attempt."
-	               SSL_STATUS="FAILED: acme.sh binary not found after installation attempt"
-	               return 1
-	       fi
+	# ---------------------------------------------------------------
+	# Ensure SSL directory exists
+	# ---------------------------------------------------------------
+	if ! mkdir -p /etc/asterisk/ssl; then
+		message "ERROR: Unable to create /etc/asterisk/ssl directory."
+		SSL_STATUS="FAILED: unable to create /etc/asterisk/ssl directory"
+		return 1
+	fi
 
-	       # Stop apache2 only if present and running
-	       if command -v systemctl >/dev/null 2>&1; then
-	               if systemctl is-active --quiet apache2; then
-	                       apache_was_running=true
-	                       message "Stopping apache2 service for standalone Let's Encrypt challenge..."
-	                       if ! systemctl stop apache2; then
-	                               message "WARNING: Failed to stop apache2 service."
-	                       fi
-	               else
-	                       message "apache2 service not active; not stopping."
-	               fi
-	       elif command -v service >/dev/null 2>&1; then
-	               if service apache2 status >/dev/null 2>&1; then
-	                       apache_was_running=true
-	                       message "Stopping apache2 service (via service) for standalone Let's Encrypt challenge..."
-	                       if ! service apache2 stop; then
-	                               message "WARNING: Failed to stop apache2 service (via service)."
-	                       fi
-	               fi
-	       else
-	               message "No service manager found for apache2; skipping apache2 stop/start."
-	       fi
+	# ---------------------------------------------------------------
+	# Detect existing certificates
+	# ---------------------------------------------------------------
+	local certbot_dir="/etc/letsencrypt/live/${FQDN}"
+	local asterisk_ssl_dir="/etc/asterisk/ssl"
+	local found_certbot=false
+	local found_asterisk=false
 
-	       message "Issuing/renewing Let's Encrypt certificate for $FQDN..."
-	       if ! "$acme_cmd" --issue --standalone \
-	               -d "$FQDN" \
-	               --fullchain-file /etc/asterisk/ssl/cert.crt \
-	               --cert-file /etc/asterisk/ssl/ca.crt \
-	               --key-file /etc/asterisk/ssl/privkey.crt \
-	               --server https://acme-v02.api.letsencrypt.org/directory; then
-	               message "ERROR: SSL certificate issuance failed for $FQDN."
-	               if [[ "$apache_was_running" == true ]]; then
-	                       if command -v systemctl >/dev/null 2>&1; then
-	                               systemctl start apache2 || message "WARNING: Failed to restart apache2 service after failure."
-	                       elif command -v service >/dev/null 2>&1; then
-	                               service apache2 start || message "WARNING: Failed to restart apache2 service (via service) after failure."
-	                       fi
-	               fi
-	               SSL_STATUS="FAILED: certificate issuance failed for $FQDN"
-	               return 1
-	       fi
+	if [[ -f "${certbot_dir}/fullchain.pem" && -f "${certbot_dir}/privkey.pem" ]]; then
+		found_certbot=true
+		message "Found existing certbot certificate at: $certbot_dir"
+		echo ""
+		echo "  Existing Let's Encrypt (certbot) certificate found: $certbot_dir"
+		_show_cert_expiry "${certbot_dir}/fullchain.pem"
+	fi
 
-	       # Restart apache2 if we stopped it
-	       if [[ "$apache_was_running" == true ]]; then
-	               message "Restarting apache2 service..."
-	               if command -v systemctl >/dev/null 2>&1; then
-	                       systemctl start apache2 || message "WARNING: Failed to restart apache2 service."
-	               elif command -v service >/dev/null 2>&1; then
-	                       service apache2 start || message "WARNING: Failed to restart apache2 service (via service)."
-	               fi
-	       fi
+	if [[ -f "${asterisk_ssl_dir}/cert.crt" && -f "${asterisk_ssl_dir}/privkey.crt" ]]; then
+		found_asterisk=true
+		message "Found existing certificate already in /etc/asterisk/ssl/"
+		echo "  Existing certificate already installed in /etc/asterisk/ssl/"
+		_show_cert_expiry "${asterisk_ssl_dir}/cert.crt"
+	fi
 
-	       message "Let's Encrypt SSL installation completed successfully for $FQDN."
-	       SSL_STATUS="Installed: Let's Encrypt SSL certificate for $FQDN (certs in /etc/asterisk/ssl)"
+	# ---------------------------------------------------------------
+	# If USE_EXISTING_CERT=true (non-interactive) — use what we have
+	# ---------------------------------------------------------------
+	if [[ "$USE_EXISTING_CERT" == true ]]; then
+		if [[ "$found_certbot" == true ]]; then
+			message "--use-existing-cert: copying certbot certificate to /etc/asterisk/ssl/"
+			if ! _install_certs_from_dir "$certbot_dir"; then
+				SSL_STATUS="FAILED: could not copy certbot certificate to /etc/asterisk/ssl/"
+				return 1
+			fi
+			SSL_STATUS="Installed: existing certbot certificate for $FQDN (certs in /etc/asterisk/ssl)"
+			return 0
+		elif [[ "$found_asterisk" == true ]]; then
+			message "--use-existing-cert: certificate already in /etc/asterisk/ssl/; nothing to do."
+			SSL_STATUS="Installed: existing certificate already in /etc/asterisk/ssl/ (no changes made)"
+			return 0
+		else
+			message "WARNING: --use-existing-cert specified but no existing certificate found for $FQDN."
+			message "No certificate installed. Use --email to obtain one."
+			SSL_STATUS="Skipped: --use-existing-cert set but no existing certificate found for $FQDN"
+			return 0
+		fi
+	fi
+
+	# ---------------------------------------------------------------
+	# Interactive prompt when existing certificate is detected
+	# ---------------------------------------------------------------
+	if [[ "$found_certbot" == true || "$found_asterisk" == true ]]; then
+		echo ""
+		echo "Existing certificate(s) detected for $FQDN."
+		echo "What would you like to do?"
+		echo "  [U] Use existing certificate (copy/keep as-is)"
+		echo "  [R] Renew with certbot"
+		echo "  [O] Obtain new certificate with certbot (requires email)"
+		echo "  [S] Skip SSL installation"
+		echo -n "Choice [U]: "
+		local choice
+		read choice
+		choice="${choice:-U}"
+		message "User SSL choice: '$choice'"
+
+		case "${choice^^}" in
+			U)
+				if [[ "$found_certbot" == true ]]; then
+					message "User chose to use existing certbot certificate."
+					if ! _install_certs_from_dir "$certbot_dir"; then
+						SSL_STATUS="FAILED: could not copy certbot certificate to /etc/asterisk/ssl/"
+						return 1
+					fi
+					SSL_STATUS="Installed: existing certbot certificate for $FQDN (certs in /etc/asterisk/ssl)"
+				else
+					message "User chose to use existing certificate already in /etc/asterisk/ssl/."
+					SSL_STATUS="Installed: existing certificate in /etc/asterisk/ssl/ (no changes made)"
+				fi
+				return 0
+				;;
+			R)
+				message "User chose to renew with certbot."
+				cert_source="certbot-renew"
+				;;
+			O)
+				message "User chose to obtain new certificate with certbot."
+				cert_source="certbot-new"
+				;;
+			S)
+				message "User chose to skip SSL installation."
+				SSL_STATUS="Skipped: user chose to skip SSL"
+				return 0
+				;;
+			*)
+				message "Unrecognised choice '$choice'; defaulting to use existing."
+				if [[ "$found_certbot" == true ]]; then
+					if ! _install_certs_from_dir "$certbot_dir"; then
+						SSL_STATUS="FAILED: could not copy certbot certificate to /etc/asterisk/ssl/"
+						return 1
+					fi
+					SSL_STATUS="Installed: existing certbot certificate for $FQDN (certs in /etc/asterisk/ssl)"
+				else
+					SSL_STATUS="Installed: existing certificate in /etc/asterisk/ssl/ (no changes made)"
+				fi
+				return 0
+				;;
+		esac
+	else
+		# No existing cert found — go straight to obtaining a new one
+		cert_source="certbot-new"
+	fi
+
+	# ---------------------------------------------------------------
+	# At this point we need to run certbot (new or renew).
+	# An email address is required.
+	# ---------------------------------------------------------------
+	if [[ -z "$SSL_EMAIL" ]]; then
+		message "ERROR: certbot requires an email address but SSL_EMAIL is not set."
+		message "Re-run with --email <addr> or provide one when prompted."
+		SSL_STATUS="FAILED: no email address supplied for certbot"
+		return 1
+	fi
+
+	# Install certbot if not present
+	if ! command -v certbot >/dev/null 2>&1; then
+		message "certbot not found; installing via apt..."
+		local cb_out
+		cb_out=$(apt-get install -y certbot 2>&1)
+		local cb_rc=$?
+		if [[ $cb_rc -ne 0 ]]; then
+			message "ERROR: Failed to install certbot (exit $cb_rc)."
+			message "apt output: $cb_out"
+			echo "ERROR: Failed to install certbot:" >&2
+			echo "$cb_out" >&2
+			SSL_STATUS="FAILED: could not install certbot"
+			return 1
+		fi
+		message "certbot installed successfully."
+	else
+		message "certbot already installed at $(command -v certbot)."
+	fi
+
+	# Stop apache2 for standalone challenge
+	_stop_apache2
+
+	# Run certbot
+	local cb_cmd_out cb_cmd_rc
+	if [[ "$cert_source" == "certbot-renew" ]]; then
+		message "Renewing certificate with certbot for $FQDN..."
+		cb_cmd_out=$(certbot renew --cert-name "$FQDN" --non-interactive 2>&1)
+		cb_cmd_rc=$?
+	else
+		message "Obtaining new certificate with certbot for $FQDN (email: $SSL_EMAIL)..."
+		cb_cmd_out=$(certbot certonly --standalone --non-interactive --agree-tos \
+			--email "$SSL_EMAIL" -d "$FQDN" 2>&1)
+		cb_cmd_rc=$?
+	fi
+
+	# Always show certbot output so the user can see rate-limit or other errors
+	echo "$cb_cmd_out"
+	message "certbot output: $cb_cmd_out"
+
+	_restart_apache2
+
+	if [[ $cb_cmd_rc -ne 0 ]]; then
+		message "ERROR: certbot failed (exit $cb_cmd_rc) for $FQDN."
+		echo ""
+		echo "ERROR: certbot failed. Full output shown above."
+		echo "Common causes:"
+		echo "  - Let's Encrypt rate limits (too many certificates issued for this domain recently)"
+		echo "    See: https://letsencrypt.org/docs/rate-limits/"
+		echo "  - Port 80 is blocked or already in use"
+		echo "  - FQDN ($FQDN) does not resolve to this server's public IP"
+		echo ""
+		echo "Tip: If you already have a valid certificate, re-run with --use-existing-cert"
+		SSL_STATUS="FAILED: certbot certificate issuance/renewal failed for $FQDN"
+		return 1
+	fi
+
+	# Copy the freshly issued cert into /etc/asterisk/ssl/
+	if ! _install_certs_from_dir "${certbot_dir}"; then
+		SSL_STATUS="FAILED: certbot succeeded but could not copy certificates to /etc/asterisk/ssl/"
+		return 1
+	fi
+
+	message "Let's Encrypt SSL installation completed successfully for $FQDN."
+	SSL_STATUS="Installed: Let's Encrypt (certbot) certificate for $FQDN (certs in /etc/asterisk/ssl)"
 }
 
 # Apply MS Teams ms_signaling_address runtime patch to Asterisk PJSIP NAT sources
@@ -854,6 +1043,9 @@ build_msteams() {
         modules_dir="$lib_path/asterisk/modules"
 
 	        message "Copy custom res_pjsip_nat.so to FreePBX Asterisk $modules_dir"
+	        # NOTE: 'make install' is intentionally NOT run here. FreePBX owns the running Asterisk
+	        # installation; only the patched res_pjsip_nat.so module needs to be replaced.
+	        # Running 'make install' would overwrite FreePBX-managed Asterisk binaries and configs.
 	        #make install
 	        #ldconfig
 	
@@ -1007,7 +1199,16 @@ build_asterisk_only() {
 }
 
 print_asterisk_only_summary() {
-	        local config_dir modules_dir
+	        local config_dir modules_dir fqdn_display PUBLIC_IPV4
+	        fqdn_display="${CLI_FQDN:-$FQDN}"
+	        message "Fetching public IPv4 address..."
+	        PUBLIC_IPV4=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || true)
+	        if [[ -z "$PUBLIC_IPV4" ]]; then
+	                message "WARNING: Could not determine public IPv4 address; using placeholder."
+	                PUBLIC_IPV4="YOUR.PUBLIC.IP"
+	        else
+	                message "Detected public IPv4: $PUBLIC_IPV4"
+	        fi
 
 	        if [[ -n "$ASTERISK_SYSCONFDIR" ]]; then
 	                config_dir="${ASTERISK_SYSCONFDIR}/asterisk"
@@ -1029,46 +1230,61 @@ print_asterisk_only_summary() {
 	        message "  - Systemd service created: ${ASTERISK_SERVICE_CREATED}"
 	        message "  - Systemd service enabled: ${ASTERISK_SERVICE_ENABLED}"
 		message "  - Sample configuration files installed: ${ASTERISK_SAMPLES_INSTALLED}"
-		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${FQDN}"
+		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${fqdn_display}"
 	        message "  - Let's Encrypt SSL: ${SSL_STATUS}"
 	        if [[ "$SSL_STATUS" == Installed:* ]]; then
 	                message "    - Full chain certificate: /etc/asterisk/ssl/cert.crt"
 	                message "    - CA certificate:         /etc/asterisk/ssl/ca.crt"
 	                message "    - Private key:            /etc/asterisk/ssl/privkey.crt"
-	                message "    - acme.sh client:         /root/.acme.sh (handles automatic certificate renewal)"
+	                message "    - Certificate renewed automatically by certbot"
 	        fi
 	        message ""
+	        if command -v fwconsole &>/dev/null; then
+	                local pjsip_conf_note="/etc/asterisk/pjsip.transports_custom.conf (FreePBX custom file — do NOT edit pjsip.conf directly)"
+	                local pjsip_conf_file="/etc/asterisk/pjsip.transports_custom.conf"
+	        else
+	                local pjsip_conf_note="${config_dir}/pjsip.conf"
+	                local pjsip_conf_file="${config_dir}/pjsip.conf"
+	        fi
 	        message "PJSIP transport configuration for MS Teams Direct Routing:"
-	        message "  Edit ${config_dir}/pjsip.conf and add or update your transport section with:"
+	        message "  Add the following transport block to: ${pjsip_conf_note}"
 	        message ""
 	        message "  [transport-ms-teams]"
 	        message "  type=transport"
 	        message "  protocol=tls"
 	        message "  bind=0.0.0.0:5061"
-	        message "  external_signaling_address=YOUR.PUBLIC.IP    ; Public IP address of your SBC"
+	        message "  external_signaling_address=${PUBLIC_IPV4}    ; Public IP address of your SBC"
 	        message "  external_signaling_port=5061                 ; External SIP TLS port"
-	        message "  ms_signaling_address=${FQDN}                 ; FQDN hostname (e.g., sbc.example.com)"
+	        message "  ms_signaling_address=${fqdn_display}         ; FQDN hostname (e.g., sbc.example.com)"
 	        message ""
-	        message "  Replace YOUR.PUBLIC.IP with your actual public IP address."
 	        message "  IMPORTANT: ms_signaling_address must be set to a FQDN hostname (not an IP address)."
 	        message "  This FQDN must match your TLS certificate and MS Teams SBC configuration."
 	        message ""
 	        message "Next steps:"
 	        message "  1. Review and customise your Asterisk configuration in ${config_dir}"
-	        message "  2. REQUIRED: Configure ms_signaling_address hostname in ${config_dir}/pjsip.conf as shown above"
+	        message "  2. REQUIRED: Configure ms_signaling_address hostname in ${pjsip_conf_file} as shown above"
 	        message "  3. Start Asterisk with: systemctl start asterisk   (if systemd service was created)"
 	        message "  4. Reload PJSIP after config changes: asterisk -rx 'pjsip reload'"
 }
 
 print_freepbx_summary() {
-	        local lib_path modules_dir
+	        local lib_path modules_dir fqdn_display PUBLIC_IPV4
 	        lib_path=$(get_lib_path)
 	        modules_dir="$lib_path/asterisk/modules"
+	        fqdn_display="${CLI_FQDN:-$FQDN}"
+	        message "Fetching public IPv4 address..."
+	        PUBLIC_IPV4=$(curl -4 -s --max-time 5 ifconfig.me 2>/dev/null || true)
+	        if [[ -z "$PUBLIC_IPV4" ]]; then
+	                message "WARNING: Could not determine public IPv4 address; using placeholder."
+	                PUBLIC_IPV4="YOUR.PUBLIC.IP"
+	        else
+	                message "Detected public IPv4: $PUBLIC_IPV4"
+	        fi
 
 	        message "MSTeams-FreePBX installation summary:"
 	        message "  - Host: ${host}"
 	        message "  - Asterisk version targeted: ${ASTVERSION}"
-		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${FQDN}"
+		message "  - Recommended PJSIP transport ms_signaling_address FQDN: ${fqdn_display}"
 	        message "  - FreePBX Asterisk modules directory: ${modules_dir}"
 	        message "  - Active PJSIP NAT module: ${modules_dir}/res_pjsip_nat.so"
 	        message "  - Original PJSIP NAT backup (if present): ${modules_dir}/res_pjsip_nat.so.ORIG"
@@ -1080,7 +1296,7 @@ print_freepbx_summary() {
 		                message "    - Full chain certificate: /etc/asterisk/ssl/cert.crt"
 		                message "    - CA certificate:         /etc/asterisk/ssl/ca.crt"
 		                message "    - Private key:            /etc/asterisk/ssl/privkey.crt"
-		                message "    - acme.sh client:         /root/.acme.sh (handles automatic certificate renewal)"
+		                message "    - Certificate renewed automatically by certbot"
 		        fi
 	        fi
 	        message "  - Systemd services: existing FreePBX/Asterisk services were not modified by this script"
@@ -1093,11 +1309,10 @@ print_freepbx_summary() {
 	        message "  type=transport"
 	        message "  protocol=tls"
 	        message "  bind=0.0.0.0:5061"
-	        message "  external_signaling_address=YOUR.PUBLIC.IP    ; Public IP address of your SBC"
+	        message "  external_signaling_address=${PUBLIC_IPV4}    ; Public IP address of your SBC"
 	        message "  external_signaling_port=5061                 ; External SIP TLS port"
-	        message "  ms_signaling_address=${FQDN}                 ; FQDN hostname (e.g., sbc.example.com)"
+	        message "  ms_signaling_address=${fqdn_display}         ; FQDN hostname (e.g., sbc.example.com)"
 	        message ""
-	        message "  Replace YOUR.PUBLIC.IP with your actual public IP address."
 	        message "  IMPORTANT: ms_signaling_address must be set to a FQDN hostname (not an IP address)."
 	        message "  This FQDN must match your TLS certificate and MS Teams SBC configuration."
 	        message ""
@@ -1118,7 +1333,7 @@ if [[ -f "$pidfile" ]]; then
 fi
 
 start=$(date +%s.%N)
-message "  Start MSTeams-FreePBX-Install process for $host $kernel"
+message "  Start MSTeams-FreePBX-Install process for $host"
 message "  Log file here $log"
 touch "$pidfile"
 
@@ -1227,14 +1442,29 @@ trap 'terminate 143' TERM
 	           mode_desc="FreePBX install + patch for MSTeams PJSIP NAT module"
 	       fi
 
-	       # Determine SSL description
+	       # Determine SSL description, including any existing certificate detection
+	       local ssl_cert_info=""
 	       if [[ "$SKIP_SSL" == true ]]; then
 	           ssl_desc="--no-ssl (SSL disabled - required for MSTeams Direct Routing)"
 	       else
+	           if [[ "$fqdn_display" != "N/A"* && -n "$fqdn_display" ]]; then
+	               local _cb_dir="/etc/letsencrypt/live/${fqdn_display}"
+	               local _ast_ssl="/etc/asterisk/ssl"
+	               local _expiry
+	               if [[ -f "${_cb_dir}/fullchain.pem" && -f "${_cb_dir}/privkey.pem" ]]; then
+	                   _expiry=$(openssl x509 -enddate -noout -in "${_cb_dir}/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
+	                   ssl_cert_info=" | Found certbot cert: ${_cb_dir} (expires: ${_expiry:-unknown})"
+	               elif [[ -f "${_ast_ssl}/cert.crt" && -f "${_ast_ssl}/privkey.crt" ]]; then
+	                   _expiry=$(openssl x509 -enddate -noout -in "${_ast_ssl}/cert.crt" 2>/dev/null | sed 's/notAfter=//')
+	                   ssl_cert_info=" | Found existing cert: /etc/asterisk/ssl/ (expires: ${_expiry:-unknown})"
+	               else
+	                   ssl_cert_info=" | No existing cert found for ${fqdn_display}"
+	               fi
+	           fi
 	           if [[ -n "$SSL_EMAIL" ]]; then
-	               ssl_desc="--email=$SSL_EMAIL (SSL enabled)"
+	               ssl_desc="--email=$SSL_EMAIL (SSL enabled)${ssl_cert_info}"
 	           else
-	               ssl_desc="Enabled (email will be requested)"
+	               ssl_desc="Enabled (email will be requested)${ssl_cert_info}"
 	           fi
 	       fi
 
@@ -1277,10 +1507,10 @@ trap 'terminate 143' TERM
 		confirm_run_options
 
 	if [[ "$restore" == true ]] ; then
-	       message "Restore option enabled: cp nat_pjsip_nat.so.ORIG nat_pjsip_nat.so."
+	       message "Restore option enabled: cp res_pjsip_nat.so.ORIG res_pjsip_nat.so."
 	       restore 
 	elif [[ "$copyback" == true ]] ; then
-	        message "Copy back option enabled: cp nat_pjsip_nat.so.MSTEAMS nat_pjsip_nat.so."
+	        message "Copy back option enabled: cp res_pjsip_nat.so.MSTEAMS res_pjsip_nat.so."
 	        copyback
 	elif [[ "$downloadonly" == true ]] ; then
 	        message "Download only option enabled: download nat_pjsip_nat.so for Debian 12 from github repo"
@@ -1296,7 +1526,7 @@ trap 'terminate 143' TERM
 	## FINISH
 	apt install -y bc
 	duration=$(echo "$(date +%s.%N) - $start" | bc)
-	execution_time=`printf "%.2f seconds" $duration`
+	execution_time=$(printf "%.2f seconds" $duration)
 	message "Total script Execution Time: $execution_time"
 		if [[ "$ASTERISK_ONLY" == true ]]; then
 		        print_asterisk_only_summary
@@ -1326,6 +1556,6 @@ trap 'terminate 143' TERM
 		        message "  - Active module: res_pjsip_nat.so (downloaded for Asterisk ${ASTVERSION})"
 		else
 		        print_freepbx_summary
-		        message "Finished MSTeams-FreePBX-Install process for $host $kernel"
+		        message "Finished MSTeams-FreePBX-Install process for $host"
 		fi
 	terminate
