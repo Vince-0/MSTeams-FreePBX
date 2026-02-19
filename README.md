@@ -73,22 +73,27 @@ Show what actions would be taken (including selected Asterisk version, architect
 --debug
 Alias for --dry-run.
 
---email <addr>
-Email address to use for Let's Encrypt SSL; avoids the interactive email prompt.
+--email=<addr>
+Email address to use for Let's Encrypt SSL; avoids the interactive email prompt. If omitted, the script will prompt interactively (entering blank skips issuance and falls back to any existing certificate).
 
---fqdn <name>
-Override detected host FQDN (used for Let's Encrypt certificates and as the recommended PJSIP transport ms_signaling_address). If omitted, the script uses the system hostname.
+--fqdn=<name>
+Override detected host FQDN (used for Let's Encrypt certificates and as the recommended PJSIP transport ms_signaling_address). If omitted, the script uses the system hostname. **Note:** the hostname must contain a dot (e.g. `sbc.example.com`); a bare name such as `localhost` will cause the script to abort.
+
+--use-existing-cert
+Use an existing certificate for the FQDN if found (non-interactive; skips issuance and renewal).
 
 --no-ssl
 Skip Let's Encrypt / SSL installation step (alias: --skip-ssl).
 
 --asterisk-only
-Install Asterisk from source (standalone, no FreePBX). Prompts for installation prefix, optional systemd service, and optional sample configs. Respects --version, --email, --no-ssl, and --dry-run.
+Install Asterisk from source (standalone, no FreePBX). Prompts for installation prefix, optional systemd service, and optional sample configs. Respects --version, --email, --use-existing-cert, --no-ssl, and --dry-run.
 ```
 
 If you run `bash MSTeams-FreePBX-Install.sh` with no options, the script will:
-- Detect or default the Asterisk major version and prompt you to confirm or override it, and
-- Prompt for an email address to use for Let's Encrypt SSL.
+- Auto-detect the Asterisk major version (falls back to 22 LTS) and prompt you to confirm or override it.
+- Auto-detect CPU architecture and the Asterisk module library path — no prompt, silent.
+- Auto-detect the system hostname as the FQDN — no prompt, silent (use `--fqdn` if the hostname is not a public FQDN).
+- Prompt for an email address to use for Let's Encrypt SSL (entering blank falls back to any existing certificate).
 
 To run non-interactively, specify `--version` and `--email`, or use `--no-ssl` to skip SSL entirely.
 
@@ -142,7 +147,7 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 1. Prepare and install a custom PJSIP NAT module for Asterisk under FreePBX.
 
-2. Configure TLS certificates from [Let's Encrypt](https://letsencrypt.org/) using [acme.sh](https://github.com/acmesh-official/acme.sh) for Asterisk to provide SRTP encryption on calls. This requires a publicly accessible DNS FQDN on your server.
+2. Configure TLS certificates from [Let's Encrypt](https://letsencrypt.org/) using [certbot](https://certbot.eff.org/) for Asterisk to provide SRTP encryption on calls. This requires a publicly accessible DNS FQDN on your server.
   
 3. Use FreePBX to control Asterisk dialplan to route calls in and out of MS Teams and any SIP connection like a telecoms carrier.
 
