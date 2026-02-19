@@ -97,7 +97,7 @@ If you run `bash MSTeams-FreePBX-Install.sh` with no options, the script will:
 
 To run non-interactively, specify `--version` and `--email`, or use `--no-ssl` to skip SSL entirely.
 
-## Standalone Asterisk-only mode (`--asterisk-only`)
+## Standalone Asterisk-only mode
 
 The script can also install Asterisk itself from source on a bare Debian 12 system, without FreePBX:
 
