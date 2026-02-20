@@ -58,33 +58,32 @@ if ! command -v wget >/dev/null 2>&1; then
 	fi
 fi
 
-# Ensure patches directory exists and download patch files if needed
+# Ensure patches directory exists and clean up old patch files
 GITHUB_PATCHES_BASE_URL="https://raw.githubusercontent.com/Vince-0/MSTeams-FreePBX/main/patches"
 
-if [[ ! -d "$AST_PATCH_DIR" ]]; then
+if [[ -d "$AST_PATCH_DIR" ]]; then
+	echo "Cleaning up old patch files from: $AST_PATCH_DIR"
+	rm -f "${AST_PATCH_DIR}"/*.patch
+else
 	echo "Creating patches directory at: $AST_PATCH_DIR"
 	mkdir -p "$AST_PATCH_DIR"
 fi
 
-# Download patch files from GitHub if they don't exist locally
+# Download patch files from GitHub (always download fresh copies)
 download_patch_file() {
 	local version="$1"
 	local patch_file="asterisk-${version}-ms-teams-ms_signaling_address-8ee0332.patch"
 	local local_path="${AST_PATCH_DIR}/${patch_file}"
 	local remote_url="${GITHUB_PATCHES_BASE_URL}/${patch_file}"
 
-	if [[ -f "$local_path" ]]; then
-		echo "Patch file for Asterisk ${version} already exists: ${patch_file}"
+	echo "Downloading patch file for Asterisk ${version} from GitHub..."
+	if wget -q -O "$local_path" "$remote_url"; then
+		echo "Successfully downloaded: ${patch_file}"
 	else
-		echo "Downloading patch file for Asterisk ${version} from GitHub..."
-		if wget -q -O "$local_path" "$remote_url"; then
-			echo "Successfully downloaded: ${patch_file}"
-		else
-			echo "ERROR: Failed to download patch file from: $remote_url"
-			echo "Please check your internet connection or download manually from:"
-			echo "https://github.com/Vince-0/MSTeams-FreePBX/tree/main/patches"
-			return 1
-		fi
+		echo "ERROR: Failed to download patch file from: $remote_url"
+		echo "Please check your internet connection or download manually from:"
+		echo "https://github.com/Vince-0/MSTeams-FreePBX/tree/main/patches"
+		return 1
 	fi
 	return 0
 }
