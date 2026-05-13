@@ -204,6 +204,24 @@ ms_signaling_address=sbc.example.com      ; FQDN — must match your certificate
 - To obtain an RSA certificate with certbot: `certbot certonly --key-type rsa --rsa-key-size 2048 -d sbc.example.com`
 - The FQDN in `ms_signaling_address` must match the certificate Common Name (CN) and the SBC hostname configured in Microsoft 365.
 
+> **⚠️ Important: ECDSA certificates cause Asterisk to crash — always use RSA**
+>
+> Certbot version 2.0 and later (the version shipped with Debian 12 Bookworm) changed its default key type from RSA to **ECDSA**. Unless RSA is explicitly requested, certbot silently issues an ECDSA certificate.
+>
+> MS Teams Direct Routing only accepts **RSA** certificates on the SBC's TLS transport. When Teams periodically pings the SBC (roughly every 60 seconds) and receives an ECDSA certificate during the TLS handshake, Asterisk's PJSIP TLS stack hits an unhandled code path and **terminates with a core dump**. This repeats on every ping, making the SBC completely unstable.
+>
+> The install script fixes this by passing `--key-type rsa --rsa-key-size 2048` to every `certbot` invocation (both new issuance and renewal), ensuring all certificates are 2048-bit RSA regardless of the certbot version installed.
+>
+> If you manage certificates manually or use an existing certificate, verify the key type before deploying:
+> ```bash
+> openssl x509 -in /etc/letsencrypt/live/<your-fqdn>/cert.pem -noout -text | grep "Public Key Algorithm"
+> # Must output: rsaEncryption — not id-ecPublicKey
+> ```
+> To replace an existing ECDSA certificate with an RSA one:
+> ```bash
+> certbot certonly --standalone --key-type rsa --rsa-key-size 2048 -d <your-fqdn>
+> ```
+
 If `ms_signaling_address` is not set, Asterisk continues to use the existing behaviour based on `external_signaling_address` and `external_signaling_port`.
 
 The install script:

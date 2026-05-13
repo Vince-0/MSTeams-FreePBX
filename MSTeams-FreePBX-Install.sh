@@ -1043,14 +1043,19 @@ install_letsencrypt() {
 	_stop_apache2
 
 	# Run certbot
+	# --key-type rsa --rsa-key-size 2048 are mandatory: recent certbot versions default to ECDSA,
+	# which causes Asterisk/FreePBX to crash (core dump) every ~60 s when MS Teams pings the SBC.
+	# MS Teams Direct Routing requires RSA certificates; ECDSA is not supported.
 	local cb_cmd_out cb_cmd_rc
 	if [[ "$cert_source" == "certbot-renew" ]]; then
-		message "Renewing certificate with certbot for $FQDN..."
-		cb_cmd_out=$(certbot renew --cert-name "$FQDN" --non-interactive 2>&1)
+		message "Renewing RSA certificate with certbot for $FQDN (key-type rsa, 2048-bit)..."
+		cb_cmd_out=$(certbot renew --cert-name "$FQDN" --non-interactive \
+			--key-type rsa --rsa-key-size 2048 2>&1)
 		cb_cmd_rc=$?
 	else
-		message "Obtaining new certificate with certbot for $FQDN (email: $SSL_EMAIL)..."
+		message "Obtaining new RSA certificate with certbot for $FQDN (email: $SSL_EMAIL, key-type rsa, 2048-bit)..."
 		cb_cmd_out=$(certbot certonly --standalone --non-interactive --agree-tos \
+			--key-type rsa --rsa-key-size 2048 \
 			--email "$SSL_EMAIL" -d "$FQDN" 2>&1)
 		cb_cmd_rc=$?
 	fi
