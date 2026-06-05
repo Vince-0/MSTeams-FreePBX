@@ -749,12 +749,18 @@ downloadonly() {
 	local bundle_url=""
 	local bundle_is_full=false   # true = SHA256SUMS present (full bundle), false = legacy 2-module bundle
 
-	if curl -fsIL "${exact_url}/SHA256SUMS" >/dev/null 2>&1; then
+	# Create tmpdir now so SHA256SUMS can be fetched directly during URL selection,
+	# avoiding a second download of the same file in Step 3 (fix: double-fetch eliminated).
+	local tmpdir
+	tmpdir=$(mktemp -d)
+	local sha256_file="${tmpdir}/SHA256SUMS"
+
+	if curl -fsSL -o "$sha256_file" "${exact_url}/SHA256SUMS" 2>/dev/null && [[ -s "$sha256_file" ]]; then
 		bundle_url="$exact_url"
 		bundle_is_full=true
 		message "Found exact-version full bundle for Asterisk ${ast_full_version}."
 
-	elif curl -fsIL "${major_url}/SHA256SUMS" >/dev/null 2>&1; then
+	elif curl -fsSL -o "$sha256_file" "${major_url}/SHA256SUMS" 2>/dev/null && [[ -s "$sha256_file" ]]; then
 		bundle_url="$major_url"
 		bundle_is_full=true
 		message "No exact-version full bundle for ${ast_full_version}. Using major-version full bundle (asterisk-${ASTVERSION})."
@@ -771,7 +777,7 @@ downloadonly() {
 		local confirm_legacy
 		read -r confirm_legacy
 		if [[ ! "$confirm_legacy" =~ ^[Yy]$ ]]; then
-			message "Aborting."; terminate 1
+			message "Aborting."; rm -rf "$tmpdir"; terminate 1
 		fi
 
 	elif curl -fsIL "${major_url}/res_pjsip.so" >/dev/null 2>&1; then
@@ -784,7 +790,7 @@ downloadonly() {
 		local confirm_legacy
 		read -r confirm_legacy
 		if [[ ! "$confirm_legacy" =~ ^[Yy]$ ]]; then
-			message "Aborting."; terminate 1
+			message "Aborting."; rm -rf "$tmpdir"; terminate 1
 		fi
 
 	else
@@ -795,7 +801,7 @@ downloadonly() {
 		message "  ${exact_url}/res_pjsip.so"
 		message "  ${major_url}/res_pjsip.so"
 		message "Run without --downloadonly to build from source."
-		terminate 1
+		rm -rf "$tmpdir"; terminate 1
 	fi
 
 	# Determine the Asterisk module directory
@@ -803,24 +809,20 @@ downloadonly() {
 	modules_dir=$(get_asterisk_module_dir)
 
 	# Step 3: Build the module download list.
-	# Full bundles: parse SHA256SUMS for the canonical list of modules in this build.
+	# Full bundles: SHA256SUMS was already fetched during URL selection — no second download needed.
 	# Legacy bundles: use the minimal 2-module set (user confirmed the risk above).
-	local tmpdir
-	tmpdir=$(mktemp -d)
 	local modules_to_fetch=()
 	local skipped_modules=()
 
 	if [[ "$bundle_is_full" == true ]]; then
-		local sha256_url="${bundle_url}/SHA256SUMS"
-		local sha256_file="${tmpdir}/SHA256SUMS"
-		message "Fetching module manifest from: ${sha256_url}"
-		if ! curl -fsSL -o "$sha256_file" "$sha256_url"; then
-			message "ERROR: Failed to download SHA256SUMS manifest."
+		mapfile -t modules_to_fetch < <(awk '{print $2}' "$sha256_file")
+		message "Bundle manifest loaded: ${#modules_to_fetch[@]} modules."
+		# Fix 1: guard against empty/malformed SHA256SUMS — would otherwise deploy nothing silently.
+		if [[ ${#modules_to_fetch[@]} -eq 0 ]]; then
+			message "ERROR: SHA256SUMS manifest is empty or could not be parsed — no modules to download."
 			rm -rf "$tmpdir"
 			terminate 1
 		fi
-		mapfile -t modules_to_fetch < <(awk '{print $2}' "$sha256_file")
-		message "Bundle manifest loaded: ${#modules_to_fetch[@]} modules."
 	else
 		modules_to_fetch=(res_pjsip.so res_pjsip_nat.so)
 	fi
@@ -871,6 +873,10 @@ downloadonly() {
 				message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found."
 				ver_ok=false
 			fi
+		elif [[ "$bundle_is_full" == true ]]; then
+			# Fix 2: sentinel absent from a full-bundle download is an error, not a silent skip.
+			message "  ERROR: ${mod} missing from downloaded set — bundle may be incomplete."
+			ver_ok=false
 		fi
 	done
 
@@ -896,12 +902,16 @@ downloadonly() {
 		fi
 		message "User confirmed: proceeding with version-mismatched modules."
 	fi
-	message "ABI verification complete."
+	# Fix 6: distinguish clean pass from mismatch-but-confirmed so log review is unambiguous.
+	if [[ "$ver_ok" == true ]]; then
+		message "ABI verification passed — all checked modules match ${ast_full_version}."
+	fi
 
 	# Step 6: Deploy — create .ORIG backups (first run only, never overwritten),
 	# then install each downloaded module and save a .MSTEAMS copy for future copyback.
 	message "Deploying PJSIP module set to: ${modules_dir}"
 	local deployed_count=0
+	local deployed_modules=()   # Fix 4: track only modules actually written to disk
 	for mod in "${downloaded_modules[@]}"; do
 		local dest="${modules_dir}/${mod}"
 		local backup="${modules_dir}/${mod}.ORIG"
@@ -924,8 +934,18 @@ downloadonly() {
 		cp -v "${tmpdir}/${mod}" "$dest"
 		cp -v "${tmpdir}/${mod}" "$msteams_copy"
 		message "  Deployed: ${mod}"
+		deployed_modules+=("$mod")
 		(( deployed_count++ ))
 	done
+
+	# Fix 3: a zero-deploy is always an error — it means the module directory is wrong
+	# or no downloaded module matched an installed module. Never exit silently.
+	if [[ $deployed_count -eq 0 ]]; then
+		message "ERROR: No modules were deployed."
+		message "Verify that Asterisk PJSIP modules exist in: ${modules_dir}"
+		rm -rf "$tmpdir"
+		terminate 1
+	fi
 
 	rm -rf "$tmpdir"
 	message ""
@@ -936,11 +956,11 @@ downloadonly() {
 	message "  Architecture:            ${DEBIAN_ARCH}"
 	message "  Module directory:        ${modules_dir}"
 	message "  Modules deployed (${deployed_count}):"
-	for mod in "${downloaded_modules[@]}"; do
+	for mod in "${deployed_modules[@]}"; do  # Fix 4: list only what was actually deployed
 		message "    ${modules_dir}/${mod}"
 	done
 	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
-		message "  Modules skipped (not in bundle — ${#skipped_modules[@]}):"
+		message "  Modules not found in module dir (${#skipped_modules[@]}):"
 		for s in "${skipped_modules[@]}"; do
 			message "    ${s}"
 		done
