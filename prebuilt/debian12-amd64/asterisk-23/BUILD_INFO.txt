@@ -1,5 +1,0 @@
-Asterisk major version: 23
-Asterisk source version: 23.3.0
-Target platform: Debian 12 amd64
-Patch: asterisk-23-ms-teams-ms_signaling_address-8ee0332.patch
-Built at: 2026-06-05T11:39:08Z

@@ -22,7 +22,7 @@
 #
 # Options:
 # --downloadonly: Download and deploy a prebuilt full PJSIP module set from
-#                https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12 (Debian 12, multiple architectures).
+#                https://github.com/Vince-0/MSTeams-PJSIPNAT (prebuilt/debian12-<arch> layout).
 #                Targets the major Asterisk version (21, 22, or 23) and detected/specified architecture.
 #                Requires the bundle to contain res_pjsip.so and res_pjsip_nat.so at minimum; downloads
 #                all other res_pjsip*.so and chan_pjsip.so modules present in the bundle as well.
@@ -132,7 +132,7 @@ show_help() {
 	    echo "Usage: $0 [OPTIONS]"
 	    echo "Options:"
 	    echo "  --downloadonly   Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched set"
-	    echo "                   from https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12 (Debian 12)."
+	    echo "                   from https://github.com/Vince-0/MSTeams-PJSIPNAT (prebuilt/debian12-<arch> layout)."
 	    echo "                   Both modules share internal structs and MUST be deployed together."
 	    echo "                   Targets the major Asterisk version (21, 22, or 23) and detected architecture."
 	    echo "                   Verifies ABI compatibility of downloaded modules before deploying."
@@ -711,7 +711,7 @@ copyback() {
 
 downloadonly() {
 	# Download and deploy the full prebuilt PJSIP module set from
-	# https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12
+	# https://github.com/Vince-0/MSTeams-PJSIPNAT/tree/main/prebuilt/debian12-<arch>
 	#
 	# Every module that #includes res_pjsip.h (res_pjsip*.so, chan_pjsip.so) encodes the
 	# same internal struct layouts at compile time.  The ms_signaling_address patch changes
@@ -779,7 +779,7 @@ downloadonly() {
 			message "A valid bundle must contain at minimum: ${REQUIRED_MODULES[*]}"
 			message "To contribute a full PJSIP bundle for Asterisk ${ASTVERSION} (${DEBIAN_ARCH}),"
 			message "build using the script without --downloadonly and upload to:"
-			message "  https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12"
+		message "  https://github.com/Vince-0/MSTeams-PJSIPNAT/tree/main/prebuilt/debian12-${DEBIAN_ARCH}"
 			message ""
 			message "Alternatively, run the script without --downloadonly to build from source."
 			terminate 1
@@ -1891,9 +1891,9 @@ trap 'terminate 143' TERM
 		fi
 
 		# Construct prebuilt base URL with detected/specified architecture.
-		# Modules are organised in the repo by Debian arch, then major Asterisk version.
-		# e.g. …/amd64/asterisk-22/res_pjsip.so
-		PREBUILT_BASE_URL="https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12/raw/main/${DEBIAN_ARCH}"
+		# Modules are organised in the repo by Debian release/arch, then major Asterisk version.
+		# e.g. …/prebuilt/debian12-amd64/asterisk-22/res_pjsip.so
+		PREBUILT_BASE_URL="https://github.com/Vince-0/MSTeams-PJSIPNAT/raw/main/prebuilt/debian12-${DEBIAN_ARCH}"
 
 		# Check architecture support and warn if needed
 		check_architecture_support "$CPU_ARCH"
@@ -2054,7 +2054,7 @@ trap 'terminate 143' TERM
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Download/install operation summary:"
 		        message "  - Mode: download prebuilt full PJSIP module set from GitHub"
-		        message "  - Source repo: https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12"
+		        message "  - Source repo: https://github.com/Vince-0/MSTeams-PJSIPNAT"
 		        message "  - Source URL:  ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/"
 		        message "  - Asterisk major version: ${ASTVERSION}"
 		        message "  - Architecture: ${DEBIAN_ARCH}"

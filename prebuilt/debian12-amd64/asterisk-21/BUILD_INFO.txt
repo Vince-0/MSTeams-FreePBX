@@ -1,5 +1,0 @@
-Asterisk major version: 21
-Asterisk source version: 21.12.2
-Target platform: Debian 12 amd64
-Patch: asterisk-21-ms-teams-ms_signaling_address-8ee0332.patch
-Built at: 2026-06-05T11:33:04Z
