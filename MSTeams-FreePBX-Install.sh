@@ -8,18 +8,26 @@
 #
 # This script does this:
 # Compile Asterisk from source with the ms_signaling_address runtime patch applied to the PJSIP module set,
-# then deploy both res_pjsip.so and res_pjsip_nat.so into FreePBX Asterisk.
+# then deploy the full PJSIP module set (res_pjsip*.so + chan_pjsip.so) into FreePBX Asterisk.
 # Install Letsencrypt SSL using certbot (preferred) and/or existing certificates.
 #
 # The ms_signaling_address patch adds a pjsip.conf transport option allowing the SIP Contact/Via FQDN
 # to be set at runtime (no recompilation needed to change the hostname).
 #
+# WHY the full PJSIP set must be replaced together:
+# Every module that #includes res_pjsip.h (res_pjsip*.so, chan_pjsip.so) embeds the same internal
+# struct layouts. When the ms_signaling_address patch changes those structs, ALL of those modules
+# must come from the same build tree. Mixing a patched res_pjsip.so with unpatched res_pjsip_session.so
+# (for example) causes immediate Asterisk crashes or silent memory corruption.
+#
 # Options:
-# --downloadonly: Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched pair from
-#                https://github.com/Vince-0/MSTeams-PJSIPNAT (amd64 only).
-#                Both modules must be present for the exact running Asterisk version.
-# --restore: Restore original PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .ORIG backups.
-# --copyback: Copy MSTeams-patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .MSTEAMS copies.
+# --downloadonly: Download and deploy a prebuilt full PJSIP module set from
+#                https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12 (Debian 12, multiple architectures).
+#                Targets the major Asterisk version (21, 22, or 23) and detected/specified architecture.
+#                Requires the bundle to contain res_pjsip.so and res_pjsip_nat.so at minimum; downloads
+#                all other res_pjsip*.so and chan_pjsip.so modules present in the bundle as well.
+# --restore: Restore the original PJSIP module set from .ORIG backups (all res_pjsip*.so + chan_pjsip.so).
+# --copyback: Copy the MSTeams-patched PJSIP module set from .MSTEAMS copies (all res_pjsip*.so + chan_pjsip.so).
 #
 ######################################################################################
 
@@ -123,11 +131,13 @@ exec 2>>${LOG_FILE}
 show_help() {
 	    echo "Usage: $0 [OPTIONS]"
 	    echo "Options:"
-	    echo "  --downloadonly   Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so module pair"
-	    echo "                   from https://github.com/Vince-0/MSTeams-PJSIPNAT (amd64 only)."
-	    echo "                   Detects the exact running Asterisk version, verifies ABI compatibility"
-	    echo "                   of downloaded modules, and deploys both as a matched set with .ORIG backups."
-	    echo "                   Aborts if no bundle exists for the running version (build from source instead)."
+	    echo "  --downloadonly   Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched set"
+	    echo "                   from https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12 (Debian 12)."
+	    echo "                   Both modules share internal structs and MUST be deployed together."
+	    echo "                   Targets the major Asterisk version (21, 22, or 23) and detected architecture."
+	    echo "                   Verifies ABI compatibility of downloaded modules before deploying."
+	    echo "                   Creates .ORIG backups for both modules before overwriting."
+	    echo "                   Aborts if no matched set exists for the version/arch (build from source instead)."
 	    echo "  --restore        Restore original PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .ORIG backups"
 	    echo "  --copyback       Copy MSTeams-patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .MSTEAMS copies"
 	    echo "  --version=<21|22|23>  Specify Asterisk major version to target. If omitted, the script will try to auto-detect and fall back to 22 (LTS)."
@@ -384,13 +394,13 @@ confirm_run_options() {
 	    if [[ "$ASTERISK_ONLY" == true ]]; then
 	        mode_desc="--asterisk-only (Standalone Asterisk install, no FreePBX)"
 	    elif [[ "$downloadonly" == true ]]; then
-	        mode_desc="--downloadonly (download prebuilt res_pjsip.so + res_pjsip_nat.so matched pair from GitHub)"
+	        mode_desc="--downloadonly (download prebuilt full PJSIP module set from GitHub for Asterisk ${ASTVERSION} ${DEBIAN_ARCH})"
 	    elif [[ "$restore" == true ]]; then
-	        mode_desc="--restore (Restore original PJSIP module set: res_pjsip.so + res_pjsip_nat.so from .ORIG)"
+	        mode_desc="--restore (Restore original full PJSIP module set: res_pjsip*.so + chan_pjsip.so from .ORIG backups)"
 	    elif [[ "$copyback" == true ]]; then
-	        mode_desc="--copyback (Copy back MSTeams PJSIP module set: res_pjsip.so + res_pjsip_nat.so from .MSTEAMS)"
+	        mode_desc="--copyback (Copy back MSTeams-patched full PJSIP module set: res_pjsip*.so + chan_pjsip.so from .MSTEAMS)"
 	    else
-	        mode_desc="FreePBX install + build patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) for MSTeams"
+	        mode_desc="FreePBX install + build patched full PJSIP module set (res_pjsip*.so + chan_pjsip.so) for MSTeams"
 	    fi
 
 	    # Determine FQDN first (needed for cert detection below)
@@ -627,55 +637,98 @@ checkfqdn() {
 	        fi
 	}
 
-#Copy original PJSIP module set back (res_pjsip.so + res_pjsip_nat.so)
+# Restore the full original PJSIP module set from .ORIG backups.
+# Discovers all res_pjsip*.so.ORIG and chan_pjsip.so.ORIG files dynamically so that
+# every ABI-coupled module is restored together, regardless of how many were deployed.
 restore() {
         local modules_dir
         modules_dir=$(get_asterisk_module_dir)
 
         message "Restoring original PJSIP module set from .ORIG backups in: $modules_dir"
 
-        for mod in res_pjsip.so res_pjsip_nat.so; do
-                if [[ -f "$modules_dir/${mod}.ORIG" ]]; then
-                        cp -v "$modules_dir/${mod}.ORIG" "$modules_dir/${mod}"
-                        message "Restored: ${mod}"
-                else
-                        message "WARNING: No .ORIG backup found for ${mod} in $modules_dir — skipping."
-                fi
+        # Collect all PJSIP .ORIG backups present in the module directory
+        shopt -s nullglob
+        local orig_files=("$modules_dir"/res_pjsip*.so.ORIG "$modules_dir"/chan_pjsip.so.ORIG)
+        shopt -u nullglob
+
+        if [[ ${#orig_files[@]} -eq 0 ]]; then
+                message "WARNING: No .ORIG backups found for PJSIP modules in $modules_dir."
+                message "Nothing to restore. Run without --restore to perform a fresh install."
+                return
+        fi
+
+        message "Found ${#orig_files[@]} .ORIG backup(s) to restore:"
+        local restored_count=0
+        for backup in "${orig_files[@]}"; do
+                local mod
+                mod=$(basename "${backup%.ORIG}")
+                message "  Restoring ${mod} from $(basename "$backup") ..."
+                cp -v "$backup" "$modules_dir/$mod"
+                message "  Restored: ${mod}"
+                (( restored_count++ ))
         done
 
+        message "Restored ${restored_count} PJSIP module(s) from .ORIG backups."
         message "IMPORTANT: A full Asterisk/FreePBX restart is required to activate the restored modules."
         message "  Run: fwconsole restart   (FreePBX)  OR  systemctl restart asterisk  (standalone)"
 }
 
-#Copy modified PJSIP module set back (res_pjsip.so + res_pjsip_nat.so)
+# Copy back the full MSTeams-patched PJSIP module set from .MSTEAMS copies.
+# Discovers all res_pjsip*.so.MSTEAMS and chan_pjsip.so.MSTEAMS files dynamically so that
+# every ABI-coupled module is re-activated together.
 copyback() {
         local modules_dir
         modules_dir=$(get_asterisk_module_dir)
 
         message "Copying MSTeams-patched PJSIP module set from .MSTEAMS copies in: $modules_dir"
 
-        for mod in res_pjsip.so res_pjsip_nat.so; do
-                if [[ -f "$modules_dir/${mod}.MSTEAMS" ]]; then
-                        cp -v "$modules_dir/${mod}.MSTEAMS" "$modules_dir/${mod}"
-                        message "Restored: ${mod}"
-                else
-                        message "WARNING: No .MSTEAMS copy found for ${mod} in $modules_dir — skipping."
-                fi
+        # Collect all PJSIP .MSTEAMS copies present in the module directory
+        shopt -s nullglob
+        local msteams_files=("$modules_dir"/res_pjsip*.so.MSTEAMS "$modules_dir"/chan_pjsip.so.MSTEAMS)
+        shopt -u nullglob
+
+        if [[ ${#msteams_files[@]} -eq 0 ]]; then
+                message "WARNING: No .MSTEAMS copies found for PJSIP modules in $modules_dir."
+                message "Nothing to copy back. Run without --copyback to perform a fresh install."
+                return
+        fi
+
+        message "Found ${#msteams_files[@]} .MSTEAMS copy(ies) to deploy:"
+        local restored_count=0
+        for msteams in "${msteams_files[@]}"; do
+                local mod
+                mod=$(basename "${msteams%.MSTEAMS}")
+                message "  Copying ${mod} from $(basename "$msteams") ..."
+                cp -v "$msteams" "$modules_dir/$mod"
+                message "  Deployed: ${mod}"
+                (( restored_count++ ))
         done
 
+        message "Copied back ${restored_count} MSTeams-patched PJSIP module(s) from .MSTEAMS copies."
         message "IMPORTANT: A full Asterisk/FreePBX restart is required to activate the patched modules."
         message "  Run: fwconsole restart   (FreePBX)  OR  systemctl restart asterisk  (standalone)"
 }
 
 downloadonly() {
-	# Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched pair from
-	# https://github.com/Vince-0/MSTeams-PJSIPNAT
+	# Download and deploy the full prebuilt PJSIP module set from
+	# https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12
 	#
-	# Both modules must be present in the bundle (same build tree) to avoid ABI mismatches.
-	# ABI is verified after download by checking the running Asterisk version string is
-	# embedded in each .so file.
+	# Every module that #includes res_pjsip.h (res_pjsip*.so, chan_pjsip.so) encodes the
+	# same internal struct layouts at compile time.  The ms_signaling_address patch changes
+	# those structs, so ALL such modules must come from the same build tree.  Leaving any
+	# old module in place alongside new ones will cause Asterisk crashes or silent memory
+	# corruption.
+	#
+	# Strategy:
+	#   1. Detect which PJSIP modules are installed on this system (the ones that need replacing).
+	#   2. Verify the bundle contains at minimum res_pjsip.so and res_pjsip_nat.so (hard requirement).
+	#   3. Download every installed PJSIP module that exists in the bundle; warn (don't abort) for
+	#      any non-core module that the bundle doesn't yet include.
+	#   4. ABI-verify every downloaded module by confirming the running Asterisk version string
+	#      is embedded in the .so.
+	#   5. Create .ORIG backups (first run only) then deploy the full set.
 
-	# Step 1: Determine the exact running Asterisk version
+	# Step 1: Determine the exact running Asterisk version (used for ABI verification)
 	local ast_full_version
 	ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 	if [[ -z "$ast_full_version" ]]; then
@@ -683,52 +736,91 @@ downloadonly() {
 		message "Ensure Asterisk is installed and the 'asterisk' command is on PATH."
 		terminate 1
 	fi
-	local ast_major
-	ast_major=$(echo "$ast_full_version" | cut -d. -f1)
-	message "Detected running Asterisk version: ${ast_full_version} (major: ${ast_major})"
+	message "Detected running Asterisk version: ${ast_full_version} (major: ${ASTVERSION})"
 
-	# Step 2: Determine download URL — prefer exact version subdirectory, fall back to major version
-	local exact_url="${PREBUILT_BASE_URL}/asterisk-${ast_full_version}"
-	local major_url="${PREBUILT_BASE_URL}/asterisk-${ast_major}"
-	local bundle_url=""
+	# Step 2: Construct the bundle URL (major version + arch).
+	# Bundles are keyed by major version so one build covers all patch releases in that branch.
+	local bundle_url="${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}"
 
-	message "Checking for prebuilt bundle at: ${exact_url}"
-	if curl -fsIL "${exact_url}/res_pjsip.so" >/dev/null 2>&1 && \
-	   curl -fsIL "${exact_url}/res_pjsip_nat.so" >/dev/null 2>&1; then
-		bundle_url="$exact_url"
-		message "Found exact-version bundle for Asterisk ${ast_full_version}."
-	else
-		message "No exact-version bundle for ${ast_full_version}. Checking: ${major_url}"
-		if curl -fsIL "${major_url}/res_pjsip.so" >/dev/null 2>&1 && \
-		   curl -fsIL "${major_url}/res_pjsip_nat.so" >/dev/null 2>&1; then
-			bundle_url="$major_url"
-			message "WARNING: No exact-version bundle for Asterisk ${ast_full_version}."
-			message "Found major-version bundle (asterisk-${ast_major}). ABI verification"
-			message "will be performed after download to confirm compatibility."
-		else
-			message "ERROR: No prebuilt bundle found for Asterisk ${ast_full_version} (${DEBIAN_ARCH})."
-			message "A valid bundle must contain BOTH res_pjsip.so AND res_pjsip_nat.so."
+	# Determine the Asterisk module directory — needed to discover installed PJSIP modules
+	local modules_dir
+	modules_dir=$(get_asterisk_module_dir)
+
+	# Build the list of PJSIP modules that are currently installed on this system.
+	# These are exactly the modules that link against res_pjsip.h and must be replaced.
+	shopt -s nullglob
+	local _installed_sos=("$modules_dir"/res_pjsip*.so "$modules_dir"/chan_pjsip.so)
+	shopt -u nullglob
+
+	local module_names=()
+	for _so in "${_installed_sos[@]}"; do
+		module_names+=("$(basename "$_so")")
+	done
+
+	if [[ ${#module_names[@]} -eq 0 ]]; then
+		message "ERROR: No PJSIP modules (res_pjsip*.so / chan_pjsip.so) found in: ${modules_dir}"
+		message "Cannot determine what to replace. Check your Asterisk installation."
+		terminate 1
+	fi
+
+	message "Installed PJSIP modules that will be replaced (${#module_names[@]}):"
+	for m in "${module_names[@]}"; do
+		message "  ${m}"
+	done
+
+	# Verify the bundle contains the two core required modules before downloading anything
+	local REQUIRED_MODULES=("res_pjsip.so" "res_pjsip_nat.so")
+	message "Verifying bundle at: ${bundle_url}"
+	for req in "${REQUIRED_MODULES[@]}"; do
+		if ! curl -fsIL "${bundle_url}/${req}" >/dev/null 2>&1; then
+			message "ERROR: Required module '${req}' not found in bundle."
+			message "  Checked: ${bundle_url}/${req}"
 			message ""
-			message "Locations checked:"
-			message "  ${exact_url}/"
-			message "  ${major_url}/"
-			message ""
-			message "To add a bundle for your version, build it using the script's default mode"
-			message "(without --downloadonly) and upload both .so files to the prebuilt repo:"
-			message "  https://github.com/Vince-0/MSTeams-PJSIPNAT"
+			message "A valid bundle must contain at minimum: ${REQUIRED_MODULES[*]}"
+			message "To contribute a full PJSIP bundle for Asterisk ${ASTVERSION} (${DEBIAN_ARCH}),"
+			message "build using the script without --downloadonly and upload to:"
+			message "  https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12"
 			message ""
 			message "Alternatively, run the script without --downloadonly to build from source."
 			terminate 1
 		fi
-	fi
+		message "  ${req}: found in bundle — OK"
+	done
 
-	# Step 3: Download both modules to a temporary directory
+	# Step 3: Download every installed PJSIP module that exists in the bundle.
+	# Core modules (res_pjsip.so, res_pjsip_nat.so) are required; all others are best-effort
+	# (warn and skip if the bundle doesn't include them yet).
 	local tmpdir
 	tmpdir=$(mktemp -d)
-	message "Downloading module pair from: ${bundle_url}"
-	for mod in res_pjsip.so res_pjsip_nat.so; do
+	local downloaded_modules=()
+	local skipped_modules=()
+
+	message "Downloading PJSIP module set from: ${bundle_url}"
+	for mod in "${module_names[@]}"; do
 		local url="${bundle_url}/${mod}"
 		local dest="${tmpdir}/${mod}"
+
+		# Determine whether this module is required
+		local is_required=false
+		for req in "${REQUIRED_MODULES[@]}"; do
+			[[ "$mod" == "$req" ]] && { is_required=true; break; }
+		done
+
+		# Probe availability in the bundle before downloading
+		if ! curl -fsIL "$url" >/dev/null 2>&1; then
+			if [[ "$is_required" == true ]]; then
+				# Should not happen (already checked above), but guard anyway
+				message "ERROR: Required module '${mod}' disappeared from bundle: ${url}"
+				rm -rf "$tmpdir"
+				terminate 1
+			else
+				message "  WARNING: ${mod} not found in bundle — skipping."
+				message "           Install it from source if needed (run without --downloadonly)."
+				skipped_modules+=("$mod")
+				continue
+			fi
+		fi
+
 		message "  Downloading ${mod} ..."
 		if ! curl -fsSL -o "$dest" "$url"; then
 			message "ERROR: Failed to download ${mod} from: ${url}"
@@ -742,19 +834,31 @@ downloadonly() {
 			rm -rf "$tmpdir"
 			terminate 1
 		fi
-		message "  Downloaded ${mod}: ${file_size} bytes"
+		message "  Downloaded ${mod}: ${file_size} bytes — OK"
+		downloaded_modules+=("$mod")
 	done
 
-	# Step 4: ABI verification — both modules must embed the running Asterisk version string
-	message "Verifying ABI compatibility of downloaded modules (looking for '${ast_full_version}')..."
+	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
+		message ""
+		message "WARNING: ${#skipped_modules[@]} installed module(s) were not found in the bundle and were skipped:"
+		for s in "${skipped_modules[@]}"; do message "  ${s}"; done
+		message "These modules will remain at their current (unpatched) version."
+		message "For a fully safe deployment, build all PJSIP modules from source (omit --downloadonly)."
+		message ""
+	fi
+	message "Downloaded ${#downloaded_modules[@]} module(s) from bundle."
+
+	# Step 4: ABI verification — every downloaded module must embed the running Asterisk version string.
+	# This confirms the bundle was compiled from the same Asterisk tree, preventing struct mismatches.
+	message "Verifying ABI compatibility (looking for version string '${ast_full_version}' in each module)..."
 	local ver_ok=true
-	for mod in res_pjsip.so res_pjsip_nat.so; do
+	for mod in "${downloaded_modules[@]}"; do
 		local embedded
 		embedded=$(strings "${tmpdir}/${mod}" 2>/dev/null | grep -F "$ast_full_version" | head -1)
 		if [[ -n "$embedded" ]]; then
 			message "  ${mod}: version string '${ast_full_version}' found — OK"
 		else
-			message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found in module."
+			message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found."
 			ver_ok=false
 		fi
 	done
@@ -762,28 +866,32 @@ downloadonly() {
 	if [[ "$ver_ok" == false ]]; then
 		message ""
 		message "ERROR: ABI mismatch — one or more downloaded modules do not appear to be built"
-		message "from Asterisk ${ast_full_version}. Deploying mismatched modules risks crashes."
+		message "from Asterisk ${ast_full_version}. Deploying mismatched modules causes crashes."
+		message ""
+		message "Every res_pjsip*.so and chan_pjsip.so module links against res_pjsip.h and"
+		message "must come from the same build tree as res_pjsip.so itself."
 		message ""
 		message "Build from source instead: run the script without --downloadonly."
 		rm -rf "$tmpdir"
 		terminate 1
 	fi
+	message "ABI verification passed for all ${#downloaded_modules[@]} downloaded module(s)."
 
-	# Step 5: Deploy — back up originals (first run only), then copy new modules into place
-	local modules_dir
-	modules_dir=$(get_asterisk_module_dir)
-	message "Deploying patched PJSIP module pair to: ${modules_dir}"
-	for mod in res_pjsip.so res_pjsip_nat.so; do
+	# Step 5: Deploy — create .ORIG backups (first run only, never overwritten),
+	# then install each downloaded module and save a .MSTEAMS copy for future copyback.
+	message "Deploying PJSIP module set to: ${modules_dir}"
+	local deployed_count=0
+	for mod in "${downloaded_modules[@]}"; do
 		local dest="${modules_dir}/${mod}"
 		local backup="${modules_dir}/${mod}.ORIG"
 		local msteams_copy="${modules_dir}/${mod}.MSTEAMS"
 
 		if [[ ! -f "$dest" ]]; then
-			message "WARNING: ${mod} not found in ${modules_dir} — skipping."
+			message "  WARNING: ${mod} not found in ${modules_dir} — skipping deployment."
 			continue
 		fi
 
-		# Create .ORIG backup only on first run (do not overwrite an existing backup)
+		# Create .ORIG backup only on first run (never overwrite an existing backup)
 		if [[ ! -f "$backup" ]]; then
 			message "  Creating .ORIG backup: ${backup}"
 			cp -v "$dest" "$backup"
@@ -794,12 +902,35 @@ downloadonly() {
 		cp -v "${tmpdir}/${mod}" "$dest"
 		cp -v "${tmpdir}/${mod}" "$msteams_copy"
 		message "  Deployed: ${mod}"
+		(( deployed_count++ ))
 	done
 
 	rm -rf "$tmpdir"
 	message ""
-	message "Download and deployment complete."
-	message "IMPORTANT: Restart Asterisk/FreePBX to activate the new modules."
+	message "========================================================"
+	message "PJSIP module set download and deployment complete."
+	message "  Asterisk major version:  ${ASTVERSION}"
+	message "  Full version (ABI check): ${ast_full_version}"
+	message "  Architecture:            ${DEBIAN_ARCH}"
+	message "  Module directory:        ${modules_dir}"
+	message "  Modules deployed (${deployed_count}):"
+	for mod in "${downloaded_modules[@]}"; do
+		message "    ${modules_dir}/${mod}"
+	done
+	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
+		message "  Modules skipped (not in bundle — ${#skipped_modules[@]}):"
+		for s in "${skipped_modules[@]}"; do
+			message "    ${s}"
+		done
+	fi
+	message "========================================================"
+	message ""
+	message "IMPORTANT: Every res_pjsip*.so and chan_pjsip.so module links against"
+	message "res_pjsip.h and must be from the same build. All downloaded modules have"
+	message "been deployed together to ensure the ms_signaling_address patch functions"
+	message "correctly and prevent Asterisk crashes."
+	message ""
+	message "A full Asterisk/FreePBX restart is required to activate the new modules."
 	message "  Run: fwconsole restart   (FreePBX)  OR  systemctl restart asterisk  (standalone)"
 }
 
@@ -1210,40 +1341,74 @@ build_msteams() {
         message "Compile Asterisk"
         make
 
-        # Deploy patched PJSIP module set to FreePBX Asterisk
+        # Deploy the full patched PJSIP module set to the FreePBX Asterisk modules directory.
         # NOTE: 'make install' is intentionally NOT run here. FreePBX owns the running Asterisk
-        # installation; only the patched res_pjsip.so and res_pjsip_nat.so need to be replaced.
-        # Running 'make install' would overwrite FreePBX-managed Asterisk binaries and configs.
+        # installation; running 'make install' would overwrite FreePBX-managed Asterisk binaries
+        # and configuration files.
+        #
+        # WHY the full set must be replaced:
+        # Every module that #includes res_pjsip.h (res_pjsip*.so and chan_pjsip.so) bakes in the
+        # same internal struct layouts at compile time.  The ms_signaling_address patch modifies
+        # those structs; leaving any old module in place alongside the new ones causes immediate
+        # Asterisk crashes or silent memory corruption.
         local modules_dir
         modules_dir=$(get_asterisk_module_dir)
 
-        message "Deploying patched PJSIP module set to: $modules_dir"
-        message "Both res_pjsip.so and res_pjsip_nat.so must be deployed together (ABI-coupled)."
+        # Collect all PJSIP modules produced by this build:
+        #   res/res_pjsip*.so  — PJSIP core and all supplementary res_pjsip modules
+        #   channels/chan_pjsip.so — SIP channel driver (also links against res_pjsip.h)
+        local -a pjsip_build_sos=()
+        while IFS= read -r -d '' so_file; do
+                pjsip_build_sos+=("$so_file")
+        done < <(find "res" -maxdepth 1 -name "res_pjsip*.so" -print0 2>/dev/null | sort -z)
+        if [[ -f "channels/chan_pjsip.so" ]]; then
+                pjsip_build_sos+=("channels/chan_pjsip.so")
+        fi
 
-        for mod in res_pjsip.so res_pjsip_nat.so; do
-                local built_so
-                # Both res_pjsip.so and res_pjsip_nat.so are built directly under res/
-                built_so="res/${mod}"
+        if [[ ${#pjsip_build_sos[@]} -eq 0 ]]; then
+                message "ERROR: No PJSIP modules found in build output under res/ and channels/."
+                message "Ensure the build completed successfully (make)."
+                terminate 1
+        fi
 
+        message "Deploying full PJSIP module set to: $modules_dir"
+        message "Modules collected from build output (${#pjsip_build_sos[@]}):"
+        for so_path in "${pjsip_build_sos[@]}"; do
+                message "  $(basename "$so_path")"
+        done
+        message "All listed modules link against res_pjsip.h and are deployed as a complete set."
+
+        local deploy_count=0
+        for built_so in "${pjsip_build_sos[@]}"; do
+                local mod
+                mod=$(basename "$built_so")
+
+                # Guard: ensure make produced the expected file
                 if [[ ! -f "$built_so" ]]; then
                         message "ERROR: Built module not found at expected path: $built_so"
                         message "Ensure the build completed successfully (make)."
                         terminate 1
                 fi
 
-                # One-time backup of the original module
+                # One-time .ORIG backup — never overwrite an existing backup so the original
+                # system modules are always preserved for --restore
                 if [[ -f "$modules_dir/${mod}" && ! -f "$modules_dir/${mod}.ORIG" ]]; then
                         mv "$modules_dir/${mod}" "$modules_dir/${mod}.ORIG"
-                        message "Backed up original: ${mod}.ORIG"
-                else
-                        message "${mod}.ORIG already exists in $modules_dir; leaving existing backup in place."
+                        message "  Backed up original: ${mod}.ORIG"
+                elif [[ -f "$modules_dir/${mod}.ORIG" ]]; then
+                        message "  .ORIG already exists for ${mod}; leaving existing backup in place."
                 fi
 
                 cp -v "$built_so" "$modules_dir/${mod}"
                 cp -v "$built_so" "$modules_dir/${mod}.MSTEAMS"
+                message "  Deployed: ${mod}"
+                (( deploy_count++ ))
         done
+        message "Deployed ${deploy_count} PJSIP module(s) to ${modules_dir}."
 
-        # Post-deploy verification: confirm ms_signaling_address is present in installed modules
+        # Post-deploy verification: confirm ms_signaling_address is present in the two
+        # modules that contain the patch (res_pjsip.so and res_pjsip_nat.so).
+        # Other PJSIP modules don't embed ms_signaling_address but are verified by count above.
         message "Verifying patched modules contain ms_signaling_address..."
         local verify_failed=false
         for mod in res_pjsip.so res_pjsip_nat.so; do
@@ -1260,7 +1425,7 @@ build_msteams() {
                 terminate 1
         fi
 
-        message "MSTeams patched PJSIP module set deployed successfully."
+        message "MSTeams patched PJSIP module set (${deploy_count} modules) deployed successfully."
         message ""
         message "IMPORTANT: A full Asterisk/FreePBX restart is required to activate the patched modules."
         message "  Do NOT attempt to hot-reload res_pjsip.so — it must be restarted cleanly."
@@ -1525,8 +1690,20 @@ print_asterisk_only_summary() {
 	        message "  ms_signaling_address=${fqdn_display}         ; FQDN hostname — must match cert CN"
 	        message ""
 	        message "  IMPORTANT: ms_signaling_address must be a FQDN (not an IP) matching your cert CN."
-	        message "  cert_file must use fullchain.pem (cert + intermediates) not just cert.pem."
+	        message "  cert_file MUST use fullchain.pem (leaf cert + intermediates) — NOT cert.pem."
+	        message "  Using cert.pem (leaf only) causes TLS handshake failures: MS Teams cannot"
+	        message "  verify the chain and drops the connection silently or with a TLS timeout."
 	        message "  MS Teams requires RSA certificates — ECDSA is not supported."
+	        message ""
+	        message "TLS troubleshooting:"
+	        message "  If Teams connections fail or time out on port 5061, capture SIP/TLS traffic:"
+	        message "    apt install sngrep && sngrep port 5061"
+	        message "  Incomplete TLS handshakes (TCP connects but no SIP messages appear) indicate"
+	        message "  Teams dropped the connection during the TLS exchange. The two most common causes:"
+	        message "  (1) cert_file points to cert.pem instead of fullchain.pem — MS Teams cannot"
+	        message "      verify the intermediate CA chain and silently drops the connection."
+	        message "  (2) An ECDSA certificate is presented instead of RSA."
+	        message "  Correct cert_file to fullchain.pem and restart Asterisk, then recheck with sngrep."
 	        message ""
 	        message "Next steps:"
 	        message "  1. Review and customise your Asterisk configuration in ${config_dir}"
@@ -1586,8 +1763,20 @@ print_freepbx_summary() {
 	        message "  ms_signaling_address=${fqdn_display}         ; FQDN hostname — must match cert CN"
 	        message ""
 	        message "  IMPORTANT: ms_signaling_address must be a FQDN (not an IP) matching your cert CN."
-	        message "  cert_file must use fullchain.pem (cert + intermediates) not just cert.pem."
+	        message "  cert_file MUST use fullchain.pem (leaf cert + intermediates) — NOT cert.pem."
+	        message "  Using cert.pem (leaf only) causes TLS handshake failures: MS Teams cannot"
+	        message "  verify the chain and drops the connection silently or with a TLS timeout."
 	        message "  MS Teams requires RSA certificates — ECDSA is not supported."
+	        message ""
+	        message "TLS troubleshooting:"
+	        message "  If Teams connections fail or time out on port 5061, capture SIP/TLS traffic:"
+	        message "    apt install sngrep && sngrep port 5061"
+	        message "  Incomplete TLS handshakes (TCP connects but no SIP messages appear) indicate"
+	        message "  Teams dropped the connection during the TLS exchange. The two most common causes:"
+	        message "  (1) cert_file points to cert.pem instead of fullchain.pem — MS Teams cannot"
+	        message "      verify the intermediate CA chain and silently drops the connection."
+	        message "  (2) An ECDSA certificate is presented instead of RSA."
+	        message "  Correct cert_file to fullchain.pem and restart Asterisk, then recheck with sngrep."
 	        message ""
 	        message "Next steps:"
 	        message "  1. REQUIRED: Configure ms_signaling_address hostname in /etc/asterisk/pjsip.transports_custom.conf as shown above"
@@ -1701,8 +1890,10 @@ trap 'terminate 143' TERM
 		       fi
 		fi
 
-		# Construct prebuilt base URL with detected/specified architecture
-		PREBUILT_BASE_URL="https://github.com/Vince-0/MSTeams-PJSIPNAT/raw/main/prebuilt/debian12-${DEBIAN_ARCH}"
+		# Construct prebuilt base URL with detected/specified architecture.
+		# Modules are organised in the repo by Debian arch, then major Asterisk version.
+		# e.g. …/amd64/asterisk-22/res_pjsip.so
+		PREBUILT_BASE_URL="https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12/raw/main/${DEBIAN_ARCH}"
 
 		# Check architecture support and warn if needed
 		check_architecture_support "$CPU_ARCH"
@@ -1726,13 +1917,13 @@ trap 'terminate 143' TERM
 	       if [[ "$ASTERISK_ONLY" == true ]]; then
 	           mode_desc="--asterisk-only (Standalone Asterisk install, no FreePBX)"
 	       elif [[ "$downloadonly" == true ]]; then
-	           mode_desc="--downloadonly (download prebuilt res_pjsip.so + res_pjsip_nat.so matched pair from GitHub)"
+	           mode_desc="--downloadonly (download prebuilt full PJSIP module set from GitHub for Asterisk ${ASTVERSION} ${DEBIAN_ARCH})"
 	       elif [[ "$restore" == true ]]; then
-	           mode_desc="--restore (Restore original PJSIP module set: res_pjsip.so + res_pjsip_nat.so from .ORIG)"
+	           mode_desc="--restore (Restore original full PJSIP module set: res_pjsip*.so + chan_pjsip.so from .ORIG backups)"
 	       elif [[ "$copyback" == true ]]; then
-	           mode_desc="--copyback (Copy back MSTeams PJSIP module set: res_pjsip.so + res_pjsip_nat.so from .MSTEAMS)"
+	           mode_desc="--copyback (Copy back MSTeams-patched full PJSIP module set: res_pjsip*.so + chan_pjsip.so from .MSTEAMS)"
 	       else
-	           mode_desc="FreePBX install + build patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) for MSTeams"
+	           mode_desc="FreePBX install + build patched full PJSIP module set (res_pjsip*.so + chan_pjsip.so) for MSTeams"
 	       fi
 
 	       # Determine SSL description, including any existing certificate detection
@@ -1773,29 +1964,40 @@ trap 'terminate 143' TERM
 	       if [[ "$ASTERISK_ONLY" == true ]]; then
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would download and extract: $tarurl"
-	               message "  Would apply the MS Teams ms_signaling_address runtime patch (res_pjsip.so + res_pjsip_nat.so)."
+	               message "  Would apply the MS Teams ms_signaling_address runtime patch to PJSIP sources."
 	               message "  Would run ./configure with a chosen installation prefix (default: /usr, configs in /etc, data in /var)."
 	               message "  Would run make && make install to install Asterisk into the chosen prefix."
 	               message "  Would optionally create and enable a systemd service at /etc/systemd/system/asterisk.service."
 	               message "  Would optionally install sample configuration files via 'make samples'."
 	       elif [[ "$downloadonly" == true ]]; then
-	               message "  Would detect the exact running Asterisk version (asterisk -V)."
-	               message "  Would check ${PREBUILT_BASE_URL}/asterisk-<version>/ for both res_pjsip.so and res_pjsip_nat.so."
-	               message "  Would fall back to major-version directory if exact version bundle is not found."
-	               message "  Would verify ABI compatibility (version string in each .so) before deploying."
-	               message "  Would create .ORIG backups and deploy both modules as a matched set."
+	               message "  Would detect installed PJSIP modules (res_pjsip*.so, chan_pjsip.so) in the Asterisk module dir."
+	               message "  Would detect the exact running Asterisk version (asterisk -V) for ABI verification."
+	               message "  Would fetch the full PJSIP module set from: ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/"
+	               message "    — res_pjsip.so and res_pjsip_nat.so are required (abort if missing from bundle)."
+	               message "    — All other res_pjsip*.so and chan_pjsip.so are downloaded if present in bundle."
+	               message "    — Non-core modules absent from the bundle are skipped with a warning."
+	               message "  Every module that links against res_pjsip.h must come from the same build to prevent crashes."
+	               message "  Would ABI-verify each downloaded module (Asterisk version string embedded in the .so)."
+	               message "  Would create .ORIG backups for all modules being replaced (first run only)."
+	               message "  Would deploy the full downloaded set to the Asterisk module directory."
 	       elif [[ "$restore" == true ]]; then
-	               message "  Would restore original PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .ORIG backups."
+	               message "  Would discover all res_pjsip*.so.ORIG and chan_pjsip.so.ORIG backups in the module directory."
+	               message "  Would restore each discovered .ORIG backup to its original module name."
 	               message "  Would require a full Asterisk/FreePBX restart afterward."
 	       elif [[ "$copyback" == true ]]; then
-	               message "  Would copy MSTeams PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .MSTEAMS copies."
+	               message "  Would discover all res_pjsip*.so.MSTEAMS and chan_pjsip.so.MSTEAMS copies in the module directory."
+	               message "  Would copy each .MSTEAMS file back to its active module name."
 	               message "  Would require a full Asterisk/FreePBX restart afterward."
 	       else
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would download and extract: $tarurl"
 	               message "  Would apply the MS Teams ms_signaling_address runtime patch to Asterisk PJSIP sources."
-	               message "  Would compile Asterisk and deploy BOTH res_pjsip.so and res_pjsip_nat.so to the FreePBX modules directory."
-	               message "  Would verify both deployed modules contain ms_signaling_address."
+	               message "  Would compile Asterisk (make) and collect full PJSIP module set from build output:"
+	               message "    res/res_pjsip*.so  — PJSIP core and supplementary modules"
+	               message "    channels/chan_pjsip.so — SIP channel driver"
+	               message "  Would back up originals (.ORIG) and deploy the full set to the FreePBX module directory."
+	               message "  Every module linking against res_pjsip.h is replaced together to prevent ABI crashes."
+	               message "  Would verify res_pjsip.so and res_pjsip_nat.so contain ms_signaling_address."
 	               message "  Would require a full fwconsole restart afterward."
 	       fi
 	       message "DRY-RUN: Exiting without making any changes."
@@ -1806,13 +2008,13 @@ trap 'terminate 143' TERM
 		confirm_run_options
 
 	if [[ "$restore" == true ]] ; then
-	       message "Restore option enabled: cp res_pjsip_nat.so.ORIG res_pjsip_nat.so."
-	       restore 
+	       message "Restore option enabled: restoring full PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .ORIG backups."
+	       restore
 	elif [[ "$copyback" == true ]] ; then
-	        message "Copy back option enabled: cp res_pjsip_nat.so.MSTEAMS res_pjsip_nat.so."
+	        message "Copy back option enabled: copying full PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .MSTEAMS copies."
 	        copyback
 	elif [[ "$downloadonly" == true ]] ; then
-	        message "Download only option enabled: downloading res_pjsip.so + res_pjsip_nat.so matched pair from GitHub."
+	        message "Download only option enabled: downloading full PJSIP module set from GitHub for Asterisk ${ASTVERSION} (${DEBIAN_ARCH})."
 	        downloadonly
 	elif [[ "$ASTERISK_ONLY" == true ]] ; then
 	        message "Asterisk standalone install option enabled: building and installing Asterisk from source."
@@ -1833,26 +2035,35 @@ trap 'terminate 143' TERM
 		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Restore operation summary:"
-		        message "  - Mode: restore original PJSIP module set from .ORIG backups"
+		        message "  - Mode: restore original full PJSIP module set from .ORIG backups"
 		        message "  - Module directory: $modules_dir"
-		        message "  - Modules restored: res_pjsip.so, res_pjsip_nat.so (from .ORIG backups)"
+		        message "  - All res_pjsip*.so.ORIG and chan_pjsip.so.ORIG backups in that directory were restored."
+		        message "  - Every module linking against res_pjsip.h is restored together to prevent ABI mismatches."
 		        message "  - REQUIRED: Restart Asterisk/FreePBX to activate: fwconsole restart"
 		elif [[ "$copyback" == true ]]; then
 		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Copyback operation summary:"
-		        message "  - Mode: copy back MSTeams-patched PJSIP module set from .MSTEAMS copies"
+		        message "  - Mode: copy back MSTeams-patched full PJSIP module set from .MSTEAMS copies"
 		        message "  - Module directory: $modules_dir"
-		        message "  - Modules restored: res_pjsip.so, res_pjsip_nat.so (from .MSTEAMS copies)"
+		        message "  - All res_pjsip*.so.MSTEAMS and chan_pjsip.so.MSTEAMS copies in that directory were deployed."
+		        message "  - Every module linking against res_pjsip.h is deployed together to prevent ABI mismatches."
 		        message "  - REQUIRED: Restart Asterisk/FreePBX to activate: fwconsole restart"
 		elif [[ "$downloadonly" == true ]]; then
 		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Download/install operation summary:"
-		        message "  - Mode: download prebuilt res_pjsip.so + res_pjsip_nat.so from GitHub"
-		        message "  - Source: ${PREBUILT_BASE_URL}"
+		        message "  - Mode: download prebuilt full PJSIP module set from GitHub"
+		        message "  - Source repo: https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12"
+		        message "  - Source URL:  ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/"
+		        message "  - Asterisk major version: ${ASTVERSION}"
+		        message "  - Architecture: ${DEBIAN_ARCH}"
 		        message "  - Module directory: ${modules_dir}"
-		        message "  - Backups: res_pjsip.so.ORIG, res_pjsip_nat.so.ORIG (created on first run)"
+		        message "  - All installed res_pjsip*.so and chan_pjsip.so modules were candidates for replacement."
+		        message "  - Core modules (res_pjsip.so, res_pjsip_nat.so) are required; others downloaded if available."
+		        message "  - .ORIG backups created for each replaced module (first run only; existing backups preserved)."
+		        message "  - Every downloaded module ABI-verified (Asterisk version string present in .so)."
+		        message "  - Every module linking against res_pjsip.h must be replaced together to prevent crashes."
 		        message "  - REQUIRED: Restart Asterisk/FreePBX to activate: fwconsole restart"
 		else
 		        print_freepbx_summary

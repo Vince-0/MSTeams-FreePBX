@@ -200,7 +200,7 @@ ms_signaling_address=sbc.example.com      ; FQDN — must match your certificate
 
 **TLS certificate requirements:**
 - MS Teams Direct Routing requires an **RSA** certificate. ECDSA certificates (e.g. issued by Let's Encrypt's E5/E6/E7 CAs) will cause a TLS handshake failure (`no shared cipher`).
-- Use `fullchain.pem` (certificate + intermediate chain), not just `cert.pem` — MS Teams validates the full chain.
+- `cert_file` **must** point to `fullchain.pem` (leaf certificate + all intermediate CA certificates), never to `cert.pem` (leaf only). MS Teams validates the entire certificate chain; if any intermediate is missing the TLS handshake fails and Teams drops the SIP connection silently or with a timeout.
 - To obtain an RSA certificate with certbot: `certbot certonly --key-type rsa --rsa-key-size 2048 -d sbc.example.com`
 - The FQDN in `ms_signaling_address` must match the certificate Common Name (CN) and the SBC hostname configured in Microsoft 365.
 
@@ -221,6 +221,26 @@ ms_signaling_address=sbc.example.com      ; FQDN — must match your certificate
 > ```bash
 > certbot certonly --standalone --key-type rsa --rsa-key-size 2048 -d <your-fqdn>
 > ```
+
+> **🔍 Troubleshooting: TLS handshake failures — `cert.pem` vs `fullchain.pem`**
+>
+> If MS Teams cannot establish a SIP TLS connection to the SBC, one of the most common root causes is that `cert_file` in the PJSIP transport stanza points to `cert.pem` (the leaf certificate only) rather than `fullchain.pem` (the leaf certificate plus all intermediate CA certificates). MS Teams validates the **entire** certificate chain; a missing intermediate causes the TLS handshake to fail, and Teams either times out or drops the TCP connection without sending any SIP traffic.
+>
+> **Symptoms:** Teams shows the SBC as unreachable; no `OPTIONS` ping responses appear; SIP trunk stays down.
+>
+> **Diagnose with `sngrep`:**
+> ```bash
+> apt install sngrep
+> sngrep port 5061
+> ```
+> Watch for incoming connections from Microsoft's SIP proxy IP ranges on port 5061. If you see a TCP session open and close immediately with no SIP messages visible, the TLS handshake failed before any SIP was exchanged — this is the signature of a missing certificate chain.
+>
+> **Fix:** Ensure `cert_file` in your PJSIP transport block uses `fullchain.pem`:
+> ```ini
+> cert_file=/etc/letsencrypt/live/<your-fqdn>/fullchain.pem   ; correct — full chain
+> # cert_file=/etc/letsencrypt/live/<your-fqdn>/cert.pem      ; wrong  — leaf only
+> ```
+> Restart Asterisk after correcting the path (`fwconsole restart` or `systemctl restart asterisk`), then recheck with `sngrep` — you should now see complete TLS handshakes followed by SIP `OPTIONS` messages.
 
 If `ms_signaling_address` is not set, Asterisk continues to use the existing behaviour based on `external_signaling_address` and `external_signaling_port`.
 
