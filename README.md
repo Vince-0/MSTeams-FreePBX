@@ -288,13 +288,20 @@ Add an `--upgrade-asterisk` mode to `MSTeams-FreePBX-Install.sh` that upgrades (
 
 5. **Update `show_help()`**, `confirm_run_options()`, and the end-of-run summary to describe the new mode accurately.
 
-> **Note:** If this is too complex or risky to implement safely as a single script mode, describe what the implementation would require and what the main risks and failure points are instead.
 
 ## Reference Links
 
 ### Run Time Patch
 
 [Jose's](https://github.com/eagle26) run time [patch](https://github.com/asterisk/asterisk/compare/master...eagle26:asterisk:master)
+
+### Upstream effort — native `external_signaling_hostname` transport option
+
+There is an open Asterisk upstream pull request to add a native `external_signaling_hostname` transport option directly to PJSIP, which would make this runtime patch unnecessary:
+
+[asterisk/asterisk#1960 — Add external_signaling_hostname transport option](https://github.com/asterisk/asterisk/pull/1960)
+
+If merged, a future Asterisk release would support setting the FQDN in SIP Contact and Via headers via `pjsip.conf` without any source patch or module replacement.
 
 ### Related projects
 
@@ -305,7 +312,6 @@ For automated installation and building from source, see:
 
 ### Build Time Patch (Old Method)
 
-[Vince-0/MSTeams-FreePBX](https://raw.githubusercontent.com/Vince-0/MSTeams-FreePBX/refs/heads/main/README-v1.md)
 
 [Asterisk Developer Mail List](https://asterisk-dev.digium.narkive.com/ucZYhaLE/asterisk-16-pjsip-invite-contact-field-and-fqdn#post12)
 
