@@ -1349,12 +1349,39 @@ build_msteams() {
 	        # Get source
 	        cd "$SRCDIR"
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
+	        local tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
+
+	        # Prefer an exact-version source tarball so compiled modules match the running binary.
+	        # Building from -current produces modules from whatever the latest minor release is
+	        # (e.g. 22.9.x), which may differ from the running Asterisk binary (e.g. 22.8.2).
+	        # Asterisk's module version check rejects modules reporting a different version at load
+	        # time, causing a silent crash/bootloop at PJSIP transport initialisation.
+	        local ast_full_version
+	        ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+	        if [[ -n "$ast_full_version" ]]; then
+	                local exact_tarball="asterisk-${ast_full_version}.tar.gz"
+	                local exact_tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/releases/${exact_tarball}"
+	                message "Checking for exact-version source tarball for Asterisk ${ast_full_version}..."
+	                if curl -fsI "$exact_tarball_url" >/dev/null 2>&1; then
+	                        TARBALL="$exact_tarball"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Exact-version tarball found — using ${TARBALL}."
+	                        message "Built modules will match the running Asterisk ${ast_full_version} binary exactly."
+	                else
+	                        message "WARNING: Exact-version tarball not available for Asterisk ${ast_full_version}."
+	                        message "Falling back to ${TARBALL} (current release)."
+	                        message "Built modules may be from a newer minor version than the running binary."
+	                        message "This can cause Asterisk's module version check to reject them at load time."
+	                fi
+	        else
+	                message "WARNING: Could not detect running Asterisk version — using ${TARBALL} (current)."
+	        fi
 
 	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
 	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
 	        else
 	                message "Downloading Asterisk source code tarball..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/$TARBALL"
+	                wget -P "$SRCDIR" "$tarball_url"
 	        fi
 
 	        # Extract the tarball
@@ -2033,7 +2060,10 @@ trap 'terminate 143' TERM
 	               message "  Would require a full Asterisk/FreePBX restart afterward."
 	       else
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
-	               message "  Would download and extract: $tarurl"
+	               message "  Would detect running Asterisk version (asterisk -V) and check for exact-version tarball:"
+	               message "    https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-<full-version>.tar.gz"
+	               message "  If found, uses it (modules match running binary exactly)."
+	               message "  If not, falls back to: $tarurl"
 	               message "  Would apply the MS Teams ms_signaling_address runtime patch to Asterisk PJSIP sources."
 	               message "  Would compile Asterisk (make) and collect full PJSIP module set from build output:"
 	               message "    res/res_pjsip*.so  — PJSIP core and supplementary modules"
