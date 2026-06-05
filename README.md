@@ -6,7 +6,7 @@ Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 Use at your own risk.
 
 ## What?
-This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source, applies the `ms_signaling_address` patch, and deploys a matched pair of patched PJSIP modules (`res_pjsip.so` + `res_pjsip_nat.so`) into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
+This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source, applies the `ms_signaling_address` patch, and deploys the full patched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
 
 ## Why?
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
@@ -28,7 +28,7 @@ This allows Asterisk to bridge SIP channels together for example a telecoms prov
 
 Asterisk implements a SIP channel driver called [PJSIP](https://github.com/pjsip/pjproject). PJSIP is a [GNU GPL](https://www.gnu.org/) [licensed](https://docs.pjsip.org/en/latest/overview/license_pjsip.html), multimedia communication library written in C.
 
-By default the PJSIP NAT module does not present a FQDN in the CONTACT and VIA SIP headers. This project applies a small patch across both `res_pjsip.so` (which stores the transport configuration) and `res_pjsip_nat.so` (which rewrites the headers) so that the FQDN can be set at runtime via the `ms_signaling_address` transport option in `pjsip.conf`. Because the two modules share internal structs, they must always be built from the same source tree and deployed together as a matched set.
+By default the PJSIP NAT module does not present a FQDN in the CONTACT and VIA SIP headers. This project applies a small patch across `res_pjsip.so` (which stores the transport configuration) and `res_pjsip_nat.so` (which rewrites the headers) so that the FQDN can be set at runtime via the `ms_signaling_address` transport option in `pjsip.conf`. Because the patch changes structs from `res_pjsip.h`, every module compiled against those structs must come from the same build tree. That means all `res_pjsip*.so` modules and `chan_pjsip.so` are deployed together as a matched full PJSIP module set.
 
 Asterisk under FreePBX is an easy way to connect a SIP server with a GUI to MS Teams but any SIP switch/proxy like FreeSwitch or Kamailio could do it.
 
@@ -38,7 +38,7 @@ MS Teams offers a number of media codecs for VOIP calls but the best for Interne
 
 ## How
 
-1. Compile Asterisk from source with the `ms_signaling_address` patch and deploy the patched `res_pjsip.so` and `res_pjsip_nat.so` module pair into FreePBX Asterisk.
+1. Compile Asterisk from source with the `ms_signaling_address` patch and deploy the patched full PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) into FreePBX Asterisk.
 
 2. Configure TLS certificates from [Let's Encrypt](https://letsencrypt.org/) using [certbot](https://certbot.eff.org/) for Asterisk to provide SRTP encryption on calls. This requires a publicly accessible DNS FQDN on your server.
   
@@ -71,13 +71,13 @@ Download the install script directly from the raw GitHub URL:
 ### Options
 ```
 --downloadonly
-Downloads and installs a compiled PJSIP NAT module from Vince-0's GitHub repo and installs it into FreePBX Asterisk.
+Downloads and installs a prebuilt full PJSIP module bundle from Vince-0's GitHub repo and installs it into FreePBX Asterisk.
 
 --restore
-Copy original PJSIP NAT module back and install.
+Restore original PJSIP modules from `.ORIG` backups (`res_pjsip*.so` + `chan_pjsip.so`).
 
 --copyback
-Copy customized MSTeams compatible PJSIP NAT module back and install.
+Copy the MSTeams-compatible patched PJSIP module set back from `.MSTEAMS` copies.
 
 --version=<21|22|23>
 Specify the Asterisk major version to target. If omitted, the script will:
@@ -142,7 +142,7 @@ The script can also install Asterisk itself from source on a bare Debian 12 syst
 - Use `--asterisk-only` to trigger this mode.
 - The script will still:
   - Detect or prompt for the Asterisk major version (or use `--version=<21|22|23>`),
-  - Apply the `ms_signaling_address` runtime patch across `res_pjsip.so` and `res_pjsip_nat.so` so that the FQDN can be configured at runtime via `pjsip.conf` (no hard-coded FQDN),
+  - Apply the `ms_signaling_address` runtime patch to the PJSIP sources so that the FQDN can be configured at runtime via `pjsip.conf` (no hard-coded FQDN),
   - Optionally install Let's Encrypt SSL certificates (respecting `--email` / `--no-ssl`).
 
 During `--asterisk-only` runs you will be prompted to:
@@ -160,7 +160,7 @@ This project uses an Asterisk PJSIP NAT patch based on the following upstream wo
 
 <https://github.com/eagle26/asterisk/commit/8ee033215acf4e7de7b4aa415539d82a54eadf64>
 
-The patch adds a new transport option `ms_signaling_address`. Instead of hard-coding the FQDN at build time, it is read from your PJSIP transport configuration at runtime. The patch touches three source files: `include/asterisk/res_pjsip.h` (struct definition), `res/res_pjsip/config_transport.c` (config parsing, compiled into `res_pjsip.so`), and `res/res_pjsip_nat.c` (header rewriting, compiled into `res_pjsip_nat.so`). Both `.so` files must be replaced together.
+The patch adds a new transport option `ms_signaling_address`. Instead of hard-coding the FQDN at build time, it is read from your PJSIP transport configuration at runtime. The patch touches three source files: `include/asterisk/res_pjsip.h` (struct definition), `res/res_pjsip/config_transport.c` (config parsing, compiled into `res_pjsip.so`), and `res/res_pjsip_nat.c` (header rewriting, compiled into `res_pjsip_nat.so`). Because `res_pjsip.h` defines structs used across the PJSIP module family, every `res_pjsip*.so` module and `chan_pjsip.so` must be replaced from the same patched build.
 
 The key parameters on your `transport` object in `pjsip.conf` are:
 
@@ -246,13 +246,15 @@ If `ms_signaling_address` is not set, Asterisk continues to use the existing beh
 
 The install script:
 
-- Applies the `ms_signaling_address` patch to the Asterisk sources and deploys both `res_pjsip.so` and `res_pjsip_nat.so` as a matched set (both default FreePBX mode and `--asterisk-only`).
+- Applies the `ms_signaling_address` patch to the Asterisk sources and deploys the full matched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) in default FreePBX mode. In `--asterisk-only` mode, the patched Asterisk tree is built and installed as a complete standalone install.
 
 ## Compiled PJSIP module set for Asterisk 21, 22 and 23 on Debian 12
 
-Precompiled `res_pjsip.so` + `res_pjsip_nat.so` module pairs for multiple Asterisk versions are available in the following repository (organised by Asterisk major version). Both modules are built from sources that include the `ms_signaling_address` runtime FQDN patch and must be deployed together:
+Precompiled full PJSIP module bundles for Asterisk 21, 22 and 23 on Debian 12 amd64 are available in the following repository. Each major-version folder contains every `res_pjsip*.so` module plus `chan_pjsip.so`, built from the same patched source tree:
 
-[Vince-0/MSTeamsPJSIPNAT_Debian12](https://github.com/Vince-0/MSTeamsPJSIPNAT_Debian12)
+[Vince-0/MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT/tree/main/prebuilt/debian12-amd64)
+
+The installer `--downloadonly` mode fetches from `prebuilt/debian12-<arch>/asterisk-<major>/`, verifies ABI compatibility, backs up originals as `.ORIG`, saves patched copies as `.MSTEAMS`, and deploys the modules together.
 
 ## Further Development
 
@@ -282,7 +284,7 @@ Add an `--upgrade-asterisk` mode to `MSTeams-FreePBX-Install.sh` that upgrades (
    - Restore `/etc/asterisk/` configuration from backup.
    - Reload FreePBX module state (`fwconsole chown && fwconsole reload`).
 
-4. **Post-upgrade patch**: After the Asterisk upgrade completes and the new version is confirmed running (`asterisk -V` matches the target major version), automatically proceed with the standard PJSIP patch build-and-deploy flow (same as running the script without `--upgrade-asterisk`), including `.ORIG` backups and matched-set deployment of `res_pjsip.so` + `res_pjsip_nat.so`.
+4. **Post-upgrade patch**: After the Asterisk upgrade completes and the new version is confirmed running (`asterisk -V` matches the target major version), automatically proceed with the standard PJSIP patch build-and-deploy flow (same as running the script without `--upgrade-asterisk`), including `.ORIG` backups and matched-set deployment of all `res_pjsip*.so` modules plus `chan_pjsip.so`.
 
 5. **Update `show_help()`**, `confirm_run_options()`, and the end-of-run summary to describe the new mode accurately.
 
@@ -298,7 +300,7 @@ Add an `--upgrade-asterisk` mode to `MSTeams-FreePBX-Install.sh` that upgrades (
 
 For automated installation and building from source, see:
 
-- [MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT) - Compiled res_pjsip_nat.so modules for Debian.
+- [MSTeams-PJSIPNAT](https://github.com/Vince-0/MSTeams-PJSIPNAT) - Prebuilt full PJSIP module bundles for Debian 12 amd64.
 
 
 ### Build Time Patch (Old Method)
