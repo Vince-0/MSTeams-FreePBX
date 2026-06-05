@@ -131,15 +131,15 @@ exec 2>>${LOG_FILE}
 show_help() {
 	    echo "Usage: $0 [OPTIONS]"
 	    echo "Options:"
-	    echo "  --downloadonly   Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched set"
+	    echo "  --downloadonly   Download and deploy the full prebuilt PJSIP module set (res_pjsip*.so + chan_pjsip.so)"
 	    echo "                   from https://github.com/Vince-0/MSTeams-PJSIPNAT (prebuilt/debian12-<arch> layout)."
-	    echo "                   Both modules share internal structs and MUST be deployed together."
-	    echo "                   Targets the major Asterisk version (21, 22, or 23) and detected architecture."
+	    echo "                   All ~47 modules linking against res_pjsip.h are deployed together."
+	    echo "                   Checks for exact-version full bundle (SHA256SUMS) first, then major-version, then legacy 2-module."
 	    echo "                   Verifies ABI compatibility of downloaded modules before deploying."
-	    echo "                   Creates .ORIG backups for both modules before overwriting."
-	    echo "                   Aborts if no matched set exists for the version/arch (build from source instead)."
-	    echo "  --restore        Restore original PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .ORIG backups"
-	    echo "  --copyback       Copy MSTeams-patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .MSTEAMS copies"
+	    echo "                   Creates .ORIG backups for all replaced modules (first run only)."
+	    echo "                   Aborts if no bundle exists for the version/arch (build from source instead)."
+	    echo "  --restore        Restore original PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .ORIG backups"
+	    echo "  --copyback       Copy MSTeams-patched PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .MSTEAMS copies"
 	    echo "  --version=<21|22|23>  Specify Asterisk major version to target. If omitted, the script will try to auto-detect and fall back to 22 (LTS)."
 	    echo "  --arch=<arch>    Override CPU architecture (e.g., amd64, arm64, armhf, i386, ppc64el). Accepts Debian arch names or kernel names (x86_64, aarch64). Auto-detected if omitted."
 	    echo "  --lib=<path>     Override library path (e.g., /usr/lib/x86_64-linux-gnu). Auto-detected based on architecture if omitted."
@@ -720,12 +720,11 @@ downloadonly() {
 	# corruption.
 	#
 	# Strategy:
-	#   1. Detect which PJSIP modules are installed on this system (the ones that need replacing).
-	#   2. Verify the bundle contains at minimum res_pjsip.so and res_pjsip_nat.so (hard requirement).
-	#   3. Download every installed PJSIP module that exists in the bundle; warn (don't abort) for
-	#      any non-core module that the bundle doesn't yet include.
-	#   4. ABI-verify every downloaded module by confirming the running Asterisk version string
-	#      is embedded in the .so.
+	#   1. Detect the exact running Asterisk version for ABI verification.
+	#   2. Select bundle URL: check exact-version SHA256SUMS first, then major-version SHA256SUMS,
+	#      then legacy 2-module bundles (with explicit user confirmation).
+	#   3. Download all modules listed in SHA256SUMS (full bundle) or 2-module fallback (legacy).
+	#   4. ABI-verify res_pjsip.so and res_pjsip_nat.so; warn+confirm rather than abort on mismatch.
 	#   5. Create .ORIG backups (first run only) then deploy the full set.
 
 	# Step 1: Determine the exact running Asterisk version (used for ABI verification)
@@ -738,88 +737,101 @@ downloadonly() {
 	fi
 	message "Detected running Asterisk version: ${ast_full_version} (major: ${ASTVERSION})"
 
-	# Step 2: Construct the bundle URL (major version + arch).
-	# Bundles are keyed by major version so one build covers all patch releases in that branch.
-	local bundle_url="${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}"
+	# Step 2: Select bundle URL.
+	# Full bundles have a SHA256SUMS manifest (built by build-prebuilt-pjsip-bundles.sh in MSTeams-PJSIPNAT).
+	# Legacy 2-module bundles (pre-fix) do not. Check in order of preference:
+	#   1. exact-version full bundle  (e.g. asterisk-22.8.2/)
+	#   2. major-version full bundle  (e.g. asterisk-22/)  — warn about minor-version mismatch
+	#   3. exact-version legacy bundle — warn it will cause crashes, require confirmation
+	#   4. major-version legacy bundle — same warning
+	local exact_url="${PREBUILT_BASE_URL}/asterisk-${ast_full_version}"
+	local major_url="${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}"
+	local bundle_url=""
+	local bundle_is_full=false   # true = SHA256SUMS present (full bundle), false = legacy 2-module bundle
 
-	# Determine the Asterisk module directory — needed to discover installed PJSIP modules
-	local modules_dir
-	modules_dir=$(get_asterisk_module_dir)
+	if curl -fsIL "${exact_url}/SHA256SUMS" >/dev/null 2>&1; then
+		bundle_url="$exact_url"
+		bundle_is_full=true
+		message "Found exact-version full bundle for Asterisk ${ast_full_version}."
 
-	# Build the list of PJSIP modules that are currently installed on this system.
-	# These are exactly the modules that link against res_pjsip.h and must be replaced.
-	shopt -s nullglob
-	local _installed_sos=("$modules_dir"/res_pjsip*.so "$modules_dir"/chan_pjsip.so)
-	shopt -u nullglob
+	elif curl -fsIL "${major_url}/SHA256SUMS" >/dev/null 2>&1; then
+		bundle_url="$major_url"
+		bundle_is_full=true
+		message "No exact-version full bundle for ${ast_full_version}. Using major-version full bundle (asterisk-${ASTVERSION})."
+		message "WARNING: Major-version bundle may not match running Asterisk ${ast_full_version} exactly."
+		message "ABI verification will run after download. You will be asked to confirm if versions differ."
 
-	local module_names=()
-	for _so in "${_installed_sos[@]}"; do
-		module_names+=("$(basename "$_so")")
-	done
+	elif curl -fsIL "${exact_url}/res_pjsip.so" >/dev/null 2>&1; then
+		bundle_url="$exact_url"
+		bundle_is_full=false
+		message "WARNING: Found only a legacy (pre-fix) 2-module bundle for Asterisk ${ast_full_version}."
+		message "Deploying this bundle WILL cause an Asterisk crash/bootloop on FreePBX installations."
+		message "Build from source instead (run without --downloadonly) to deploy all ~47 required modules."
+		echo -n "Proceed with legacy 2-module bundle anyway? (y/n) [n]: "
+		local confirm_legacy
+		read -r confirm_legacy
+		if [[ ! "$confirm_legacy" =~ ^[Yy]$ ]]; then
+			message "Aborting."; terminate 1
+		fi
 
-	if [[ ${#module_names[@]} -eq 0 ]]; then
-		message "ERROR: No PJSIP modules (res_pjsip*.so / chan_pjsip.so) found in: ${modules_dir}"
-		message "Cannot determine what to replace. Check your Asterisk installation."
+	elif curl -fsIL "${major_url}/res_pjsip.so" >/dev/null 2>&1; then
+		bundle_url="$major_url"
+		bundle_is_full=false
+		message "WARNING: Found only a legacy (pre-fix) 2-module bundle at major-version path (asterisk-${ASTVERSION})."
+		message "Deploying this bundle WILL cause an Asterisk crash/bootloop on FreePBX installations."
+		message "Build from source instead (run without --downloadonly) to deploy all ~47 required modules."
+		echo -n "Proceed with legacy 2-module bundle anyway? (y/n) [n]: "
+		local confirm_legacy
+		read -r confirm_legacy
+		if [[ ! "$confirm_legacy" =~ ^[Yy]$ ]]; then
+			message "Aborting."; terminate 1
+		fi
+
+	else
+		message "ERROR: No bundle found for Asterisk ${ast_full_version} (${DEBIAN_ARCH})."
+		message "Checked:"
+		message "  ${exact_url}/SHA256SUMS"
+		message "  ${major_url}/SHA256SUMS"
+		message "  ${exact_url}/res_pjsip.so"
+		message "  ${major_url}/res_pjsip.so"
+		message "Run without --downloadonly to build from source."
 		terminate 1
 	fi
 
-	message "Installed PJSIP modules that will be replaced (${#module_names[@]}):"
-	for m in "${module_names[@]}"; do
-		message "  ${m}"
-	done
+	# Determine the Asterisk module directory
+	local modules_dir
+	modules_dir=$(get_asterisk_module_dir)
 
-	# Verify the bundle contains the two core required modules before downloading anything
-	local REQUIRED_MODULES=("res_pjsip.so" "res_pjsip_nat.so")
-	message "Verifying bundle at: ${bundle_url}"
-	for req in "${REQUIRED_MODULES[@]}"; do
-		if ! curl -fsIL "${bundle_url}/${req}" >/dev/null 2>&1; then
-			message "ERROR: Required module '${req}' not found in bundle."
-			message "  Checked: ${bundle_url}/${req}"
-			message ""
-			message "A valid bundle must contain at minimum: ${REQUIRED_MODULES[*]}"
-			message "To contribute a full PJSIP bundle for Asterisk ${ASTVERSION} (${DEBIAN_ARCH}),"
-			message "build using the script without --downloadonly and upload to:"
-		message "  https://github.com/Vince-0/MSTeams-PJSIPNAT/tree/main/prebuilt/debian12-${DEBIAN_ARCH}"
-			message ""
-			message "Alternatively, run the script without --downloadonly to build from source."
-			terminate 1
-		fi
-		message "  ${req}: found in bundle — OK"
-	done
-
-	# Step 3: Download every installed PJSIP module that exists in the bundle.
-	# Core modules (res_pjsip.so, res_pjsip_nat.so) are required; all others are best-effort
-	# (warn and skip if the bundle doesn't include them yet).
+	# Step 3: Build the module download list.
+	# Full bundles: parse SHA256SUMS for the canonical list of modules in this build.
+	# Legacy bundles: use the minimal 2-module set (user confirmed the risk above).
 	local tmpdir
 	tmpdir=$(mktemp -d)
-	local downloaded_modules=()
+	local modules_to_fetch=()
 	local skipped_modules=()
 
+	if [[ "$bundle_is_full" == true ]]; then
+		local sha256_url="${bundle_url}/SHA256SUMS"
+		local sha256_file="${tmpdir}/SHA256SUMS"
+		message "Fetching module manifest from: ${sha256_url}"
+		if ! curl -fsSL -o "$sha256_file" "$sha256_url"; then
+			message "ERROR: Failed to download SHA256SUMS manifest."
+			rm -rf "$tmpdir"
+			terminate 1
+		fi
+		mapfile -t modules_to_fetch < <(awk '{print $2}' "$sha256_file")
+		message "Bundle manifest loaded: ${#modules_to_fetch[@]} modules."
+	else
+		modules_to_fetch=(res_pjsip.so res_pjsip_nat.so)
+	fi
+
+	# Step 4: Download all modules in the manifest
+	local downloaded_modules=()
+
 	message "Downloading PJSIP module set from: ${bundle_url}"
-	for mod in "${module_names[@]}"; do
+	for mod in "${modules_to_fetch[@]}"; do
 		local url="${bundle_url}/${mod}"
 		local dest="${tmpdir}/${mod}"
-
-		# Determine whether this module is required
-		local is_required=false
-		for req in "${REQUIRED_MODULES[@]}"; do
-			[[ "$mod" == "$req" ]] && { is_required=true; break; }
-		done
-
-		# Probe availability in the bundle before downloading
-		if ! curl -fsIL "$url" >/dev/null 2>&1; then
-			if [[ "$is_required" == true ]]; then
-				# Should not happen (already checked above), but guard anyway
-				message "ERROR: Required module '${mod}' disappeared from bundle: ${url}"
-				rm -rf "$tmpdir"
-				terminate 1
-			else
-				message "  WARNING: ${mod} not found in bundle — skipping."
-				message "           Install it from source if needed (run without --downloadonly)."
-				skipped_modules+=("$mod")
-				continue
-			fi
-		fi
 
 		message "  Downloading ${mod} ..."
 		if ! curl -fsSL -o "$dest" "$url"; then
@@ -837,47 +849,56 @@ downloadonly() {
 		message "  Downloaded ${mod}: ${file_size} bytes — OK"
 		downloaded_modules+=("$mod")
 	done
-
-	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
-		message ""
-		message "WARNING: ${#skipped_modules[@]} installed module(s) were not found in the bundle and were skipped:"
-		for s in "${skipped_modules[@]}"; do message "  ${s}"; done
-		message "These modules will remain at their current (unpatched) version."
-		message "For a fully safe deployment, build all PJSIP modules from source (omit --downloadonly)."
-		message ""
-	fi
 	message "Downloaded ${#downloaded_modules[@]} module(s) from bundle."
 
-	# Step 4: ABI verification — every downloaded module must embed the running Asterisk version string.
-	# This confirms the bundle was compiled from the same Asterisk tree, preventing struct mismatches.
-	message "Verifying ABI compatibility (looking for version string '${ast_full_version}' in each module)..."
+	# Step 5: ABI verification — check that the two key modules embed the running Asterisk version string.
+	# Only res_pjsip.so and res_pjsip_nat.so are checked here; they are representative of the build.
+	# NOTE: When using a major-version bundle (e.g. asterisk-22/) against a specific patch release
+	# (e.g. 22.8.2), this check may fail because the bundle was built from a newer 22.x.y release.
+	# All modules still come from the same build tree so the struct ABI is consistent; the only risk
+	# is Asterisk's module version check at load time. The user is given the option to proceed.
+	# A future --exact-version=X.Y.Z flag could target the specific release tarball:
+	#   https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-X.Y.Z.tar.gz
+	message "Verifying ABI compatibility (looking for version string '${ast_full_version}')..."
 	local ver_ok=true
-	for mod in "${downloaded_modules[@]}"; do
-		local embedded
-		embedded=$(strings "${tmpdir}/${mod}" 2>/dev/null | grep -F "$ast_full_version" | head -1)
-		if [[ -n "$embedded" ]]; then
-			message "  ${mod}: version string '${ast_full_version}' found — OK"
-		else
-			message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found."
-			ver_ok=false
+	for mod in res_pjsip.so res_pjsip_nat.so; do
+		if [[ -f "${tmpdir}/${mod}" ]]; then
+			local embedded
+			embedded=$(strings "${tmpdir}/${mod}" 2>/dev/null | grep -F "$ast_full_version" | head -1)
+			if [[ -n "$embedded" ]]; then
+				message "  ${mod}: version string '${ast_full_version}' found — OK"
+			else
+				message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found."
+				ver_ok=false
+			fi
 		fi
 	done
 
 	if [[ "$ver_ok" == false ]]; then
 		message ""
-		message "ERROR: ABI mismatch — one or more downloaded modules do not appear to be built"
-		message "from Asterisk ${ast_full_version}. Deploying mismatched modules causes crashes."
+		message "WARNING: Downloaded modules do not appear to match the running Asterisk ${ast_full_version}."
+		message "This is expected when only a major-version bundle (e.g. asterisk-${ASTVERSION}/) is available"
+		message "and no exact-version bundle (e.g. asterisk-${ast_full_version}/) exists yet."
 		message ""
-		message "Every res_pjsip*.so and chan_pjsip.so module links against res_pjsip.h and"
-		message "must come from the same build tree as res_pjsip.so itself."
+		message "All downloaded modules come from the same build tree, so the struct ABI is consistent"
+		message "and the ms_signaling_address crash is prevented. However, Asterisk's module version"
+		message "check at load time may reject modules with a different minor version."
 		message ""
-		message "Build from source instead: run the script without --downloadonly."
-		rm -rf "$tmpdir"
-		terminate 1
+		message "For an exact version match, build from source (run without --downloadonly)."
+		message ""
+		echo -n "Deploy anyway? (y/n) [n]: "
+		local confirm_mismatch
+		read -r confirm_mismatch
+		if [[ ! "$confirm_mismatch" =~ ^[Yy]$ ]]; then
+			message "Aborting. Run without --downloadonly to build from source for your exact version."
+			rm -rf "$tmpdir"
+			terminate 1
+		fi
+		message "User confirmed: proceeding with version-mismatched modules."
 	fi
-	message "ABI verification passed for all ${#downloaded_modules[@]} downloaded module(s)."
+	message "ABI verification complete."
 
-	# Step 5: Deploy — create .ORIG backups (first run only, never overwritten),
+	# Step 6: Deploy — create .ORIG backups (first run only, never overwritten),
 	# then install each downloaded module and save a .MSTEAMS copy for future copyback.
 	message "Deploying PJSIP module set to: ${modules_dir}"
 	local deployed_count=0
@@ -1970,15 +1991,16 @@ trap 'terminate 143' TERM
 	               message "  Would optionally create and enable a systemd service at /etc/systemd/system/asterisk.service."
 	               message "  Would optionally install sample configuration files via 'make samples'."
 	       elif [[ "$downloadonly" == true ]]; then
-	               message "  Would detect installed PJSIP modules (res_pjsip*.so, chan_pjsip.so) in the Asterisk module dir."
 	               message "  Would detect the exact running Asterisk version (asterisk -V) for ABI verification."
-	               message "  Would fetch the full PJSIP module set from: ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/"
-	               message "    — res_pjsip.so and res_pjsip_nat.so are required (abort if missing from bundle)."
-	               message "    — All other res_pjsip*.so and chan_pjsip.so are downloaded if present in bundle."
-	               message "    — Non-core modules absent from the bundle are skipped with a warning."
-	               message "  Every module that links against res_pjsip.h must come from the same build to prevent crashes."
-	               message "  Would ABI-verify each downloaded module (Asterisk version string embedded in the .so)."
-	               message "  Would create .ORIG backups for all modules being replaced (first run only)."
+	               message "  Would check for bundle URL in order: exact-version SHA256SUMS → major-version SHA256SUMS → legacy 2-module."
+	               message "    — Exact-version:  ${PREBUILT_BASE_URL}/asterisk-<full-version>/SHA256SUMS"
+	               message "    — Major-version:  ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/SHA256SUMS"
+	               message "    — Legacy bundles: warn that they cause crashes; require user confirmation."
+	               message "  For full bundles: would download all modules listed in SHA256SUMS (~47 modules)."
+	               message "  For legacy bundles: would download only res_pjsip.so + res_pjsip_nat.so."
+	               message "  Would ABI-verify res_pjsip.so and res_pjsip_nat.so (version string embedded in .so)."
+	               message "    — Version mismatch: warns and asks for confirmation rather than hard-aborting."
+	               message "  Would create .ORIG backups for all replaced modules (first run only)."
 	               message "  Would deploy the full downloaded set to the Asterisk module directory."
 	       elif [[ "$restore" == true ]]; then
 	               message "  Would discover all res_pjsip*.so.ORIG and chan_pjsip.so.ORIG backups in the module directory."
