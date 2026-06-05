@@ -909,6 +909,7 @@ downloadonly() {
 
 		if [[ ! -f "$dest" ]]; then
 			message "  WARNING: ${mod} not found in ${modules_dir} — skipping deployment."
+			skipped_modules+=("$mod")
 			continue
 		fi
 
