@@ -1347,7 +1347,8 @@ build_msteams() {
 	        fi
 	
 	        # Get source
-	        cd "$SRCDIR"
+	        cd "$SRCDIR" \
+	                || { message "ERROR: Source directory does not exist: $SRCDIR"; terminate 1; }
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
 	        local tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
 
@@ -1414,14 +1415,15 @@ build_msteams() {
 		        # causing "can't find file to patch" errors.
 		        local extracted_src_dir
 		        extracted_src_dir=$(find "$SRCDIR" -maxdepth 1 -mindepth 1 -type d \
-		                -name "asterisk-${ASTVERSION}.*" | sort | head -1)
+		                -name "asterisk-${ASTVERSION}.*" | sort -V | tail -1)
 		        if [[ -z "$extracted_src_dir" || ! -d "$extracted_src_dir" ]]; then
 		                message "ERROR: Could not find extracted Asterisk source directory"
 		                message "  Expected: $SRCDIR/asterisk-${ASTVERSION}.*"
 		                message "  Ensure the tarball extracted correctly."
 		                terminate 1
 		        fi
-		        cd "$extracted_src_dir"
+		        cd "$extracted_src_dir" \
+		                || { message "ERROR: Cannot enter source directory: $extracted_src_dir"; terminate 1; }
 
 	        # Apply MS Teams runtime FQDN patch BEFORE installing prerequisites.
 	        # Fail fast: no point spending time on install_prereq if the patch is missing or broken.
@@ -1622,7 +1624,8 @@ build_asterisk_only() {
 	                rm -rf "$SRCDIR"/asterisk-"${ASTVERSION}".*
 	        fi
 	
-	        cd "$SRCDIR"
+	        cd "$SRCDIR" \
+	                || { message "ERROR: Source directory does not exist: $SRCDIR"; terminate 1; }
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
 
 	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
@@ -1635,7 +1638,20 @@ build_asterisk_only() {
 	        message "Extracting Asterisk source tarball..."
 	        tar -xzf "$SRCDIR/$TARBALL"
 	
-	        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
+	        # Resolve the extracted source directory explicitly — same pattern as build_msteams().
+	        # A glob-based cd silently stays in $SRCDIR when the pattern fails to match,
+	        # causing apply_ms_teams_runtime_patch to receive /usr/src instead of the source tree.
+	        local extracted_src_dir
+	        extracted_src_dir=$(find "$SRCDIR" -maxdepth 1 -mindepth 1 -type d \
+	                -name "asterisk-${ASTVERSION}.*" | sort -V | tail -1)
+	        if [[ -z "$extracted_src_dir" || ! -d "$extracted_src_dir" ]]; then
+	                message "ERROR: Could not find extracted Asterisk source directory"
+	                message "  Expected: $SRCDIR/asterisk-${ASTVERSION}.*"
+	                message "  Ensure the tarball extracted correctly."
+	                terminate 1
+	        fi
+	        cd "$extracted_src_dir" \
+	                || { message "ERROR: Cannot enter source directory: $extracted_src_dir"; terminate 1; }
 
 	        message "Installing dependencies for standalone Asterisk build..."
 	        contrib/scripts/install_prereq install
@@ -1659,7 +1675,7 @@ build_asterisk_only() {
 	        message "Local state base directory: $ASTERISK_LOCALSTATEDIR"
 
 		# Apply MS Teams runtime FQDN patch (ms_signaling_address) to PJSIP NAT
-		if ! apply_ms_teams_runtime_patch "$PWD" "$ASTVERSION"; then
+		if ! apply_ms_teams_runtime_patch "$extracted_src_dir" "$ASTVERSION"; then
 		        message "ERROR: Failed to apply MS Teams runtime patch to Asterisk sources (standalone install)."
 		        terminate 1
 		fi
