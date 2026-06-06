@@ -1349,12 +1349,58 @@ build_msteams() {
 	        # Get source
 	        cd "$SRCDIR"
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
+	        local tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
+
+	        # Prefer an exact-version source tarball so compiled modules match the running binary.
+	        # Building from -current produces modules from whatever the latest minor release is
+	        # (e.g. 22.9.x), which may differ from the running Asterisk binary (e.g. 22.8.2).
+	        # Asterisk's module version check rejects modules reporting a different version at load
+	        # time, causing a silent crash/bootloop at PJSIP transport initialisation.
+	        # The regex captures four-part security release versions (e.g. 22.8.2.1) as well as
+	        # the standard three-part form — previously [0-9]+\.[0-9]+\.[0-9]+ would truncate
+	        # 22.8.2.1 to 22.8.2, probing a tarball that doesn't exist for that release.
+	        local ast_full_version
+	        ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+	        if [[ -n "$ast_full_version" ]]; then
+	                local exact_tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ast_full_version}.tar.gz"
+	                message "Checking for exact-version source tarball for Asterisk ${ast_full_version}..."
+
+	                if [[ -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        # Disk cache hit — use it directly without a network probe.
+	                        # This also handles offline re-runs where the tarball was downloaded
+	                        # previously but the network probe would now fail (fix: re-run regression).
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Found cached exact-version tarball: ${TARBALL}."
+	                        message "Built modules will match the running Asterisk ${ast_full_version} binary exactly."
+	                elif wget -q -P "$SRCDIR" "$exact_tarball_url" 2>/dev/null \
+	                     && [[ -s "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        # Direct download attempt — avoids a HEAD probe (some servers return
+	                        # 405 Method Not Allowed for HEAD even when GET succeeds, causing the
+	                        # old curl -fsI probe to produce a false negative; fix: HEAD replaced).
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Downloaded exact-version tarball: ${TARBALL}."
+	                        message "Built modules will match the running Asterisk ${ast_full_version} binary exactly."
+	                else
+	                        rm -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz"  # remove any partial download
+	                        message "WARNING: Exact-version tarball not available for Asterisk ${ast_full_version}."
+	                        message "Falling back to ${TARBALL} (current release)."
+	                        message "Built modules may be from a different minor version than the running binary."
+	                        message "This can cause Asterisk's module version check to reject them at load time."
+	                fi
+	        else
+	                message "WARNING: Could not detect running Asterisk version — using ${TARBALL} (current)."
+	        fi
 
 	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
 	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
 	        else
 	                message "Downloading Asterisk source code tarball..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/$TARBALL"
+	                # Guard wget: previously an unhandled failure here let the script continue
+	                # to tar -xzf on a missing file, producing a confusing tar error (fix: wget guard).
+	                wget -P "$SRCDIR" "$tarball_url" \
+	                        || { message "ERROR: Failed to download Asterisk source tarball: $tarball_url"; terminate 1; }
 	        fi
 
 	        # Extract the tarball
@@ -1411,6 +1457,45 @@ build_msteams() {
                 message "ERROR: No PJSIP modules found in build output under res/ and channels/."
                 message "Ensure the build completed successfully (make)."
                 terminate 1
+        fi
+
+        # Pre-deploy ABI version check — mirrors downloadonly()'s ABI verification.
+        # When the -current tarball was used as a fallback the built modules may report a
+        # different version than the running Asterisk binary, causing the module loader to
+        # reject them at startup.  Check before any files are overwritten so the user can
+        # abort cleanly (fix: no post-build version verification).
+        if [[ -n "$ast_full_version" ]]; then
+                message "Verifying built modules match running Asterisk ${ast_full_version}..."
+                local build_ver_ok=true
+                for abi_mod in "res/res_pjsip.so" "res/res_pjsip_nat.so"; do
+                        if [[ -f "$abi_mod" ]]; then
+                                local embedded
+                                embedded=$(strings "$abi_mod" 2>/dev/null | grep -F "$ast_full_version" | head -1)
+                                if [[ -n "$embedded" ]]; then
+                                        message "  $(basename "$abi_mod"): version string '${ast_full_version}' found — OK"
+                                else
+                                        message "  WARNING: $(basename "$abi_mod"): version string '${ast_full_version}' NOT found."
+                                        build_ver_ok=false
+                                fi
+                        fi
+                done
+                if [[ "$build_ver_ok" == false ]]; then
+                        message ""
+                        message "WARNING: Built modules do not match the running Asterisk ${ast_full_version}."
+                        message "This happens when the exact-version tarball was unavailable and -current was used."
+                        message "Asterisk may reject the modules at load time, causing a crash/bootloop."
+                        message ""
+                        echo -n "Deploy anyway? (y/n) [n]: "
+                        local confirm_build_mismatch
+                        read -r confirm_build_mismatch
+                        if [[ ! "$confirm_build_mismatch" =~ ^[Yy]$ ]]; then
+                                message "Aborting. No modules have been deployed."
+                                terminate 1
+                        fi
+                        message "User confirmed: deploying version-mismatched modules."
+                else
+                        message "Built module versions verified — match running Asterisk ${ast_full_version}."
+                fi
         fi
 
         message "Deploying full PJSIP module set to: $modules_dir"
@@ -2033,7 +2118,10 @@ trap 'terminate 143' TERM
 	               message "  Would require a full Asterisk/FreePBX restart afterward."
 	       else
 	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
-	               message "  Would download and extract: $tarurl"
+	               message "  Would detect running Asterisk version (asterisk -V) and check for exact-version tarball:"
+	               message "    https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-<full-version>.tar.gz"
+	               message "  If found, uses it (modules match running binary exactly)."
+	               message "  If not, falls back to: $tarurl"
 	               message "  Would apply the MS Teams ms_signaling_address runtime patch to Asterisk PJSIP sources."
 	               message "  Would compile Asterisk (make) and collect full PJSIP module set from build output:"
 	               message "    res/res_pjsip*.so  — PJSIP core and supplementary modules"
