@@ -16,8 +16,14 @@ name: Lint
 on:
   push:
     branches: ["**"]
+    paths:
+      - "**.sh"
+      - ".github/workflows/lint.yml"
   pull_request:
     branches: ["**"]
+    paths:
+      - "**.sh"
+      - ".github/workflows/lint.yml"
 
 # Opt into Node.js 24 ahead of the mandatory migration (forced default: June 16 2026).
 # Eliminates the deprecation warning produced by actions/checkout@v4 on Node.js 20 runners.
