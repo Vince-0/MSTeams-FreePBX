@@ -5,6 +5,7 @@ Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
 Use at your own risk.
 
+
 ## What?
 This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source, applies the `ms_signaling_address` patch, and deploys the full patched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
 
