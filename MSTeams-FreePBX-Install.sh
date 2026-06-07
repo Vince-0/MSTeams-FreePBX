@@ -131,15 +131,14 @@ exec 2>>${LOG_FILE}
 show_help() {
 	    echo "Usage: $0 [OPTIONS]"
 	    echo "Options:"
-	    echo "  --downloadonly   Download and deploy a prebuilt res_pjsip.so + res_pjsip_nat.so matched set"
+	    echo "  --downloadonly   Download and deploy the full prebuilt PJSIP module set (res_pjsip*.so + chan_pjsip.so)"
 	    echo "                   from https://github.com/Vince-0/MSTeams-PJSIPNAT (prebuilt/debian12-<arch> layout)."
-	    echo "                   Both modules share internal structs and MUST be deployed together."
-	    echo "                   Targets the major Asterisk version (21, 22, or 23) and detected architecture."
-	    echo "                   Verifies ABI compatibility of downloaded modules before deploying."
-	    echo "                   Creates .ORIG backups for both modules before overwriting."
-	    echo "                   Aborts if no matched set exists for the version/arch (build from source instead)."
-	    echo "  --restore        Restore original PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .ORIG backups"
-	    echo "  --copyback       Copy MSTeams-patched PJSIP module set (res_pjsip.so + res_pjsip_nat.so) from .MSTEAMS copies"
+	    echo "                   All modules linking against res_pjsip.h MUST come from the same build tree."
+	    echo "                   Checks for an exact-version bundle (SHA256SUMS) first, then major-version bundle."
+	    echo "                   Aborts with a hard error on ABI mismatch or missing bundle (build from source instead)."
+	    echo "                   Creates .ORIG backups for all replaced modules (first run only)."
+	    echo "  --restore        Restore original PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .ORIG backups"
+	    echo "  --copyback       Copy MSTeams-patched PJSIP module set (res_pjsip*.so + chan_pjsip.so) from .MSTEAMS copies"
 	    echo "  --version=<21|22|23>  Specify Asterisk major version to target. If omitted, the script will try to auto-detect and fall back to 22 (LTS)."
 	    echo "  --arch=<arch>    Override CPU architecture (e.g., amd64, arm64, armhf, i386, ppc64el). Accepts Debian arch names or kernel names (x86_64, aarch64). Auto-detected if omitted."
 	    echo "  --lib=<path>     Override library path (e.g., /usr/lib/x86_64-linux-gnu). Auto-detected based on architecture if omitted."
@@ -720,17 +719,22 @@ downloadonly() {
 	# corruption.
 	#
 	# Strategy:
-	#   1. Detect which PJSIP modules are installed on this system (the ones that need replacing).
-	#   2. Verify the bundle contains at minimum res_pjsip.so and res_pjsip_nat.so (hard requirement).
-	#   3. Download every installed PJSIP module that exists in the bundle; warn (don't abort) for
-	#      any non-core module that the bundle doesn't yet include.
-	#   4. ABI-verify every downloaded module by confirming the running Asterisk version string
-	#      is embedded in the .so.
-	#   5. Create .ORIG backups (first run only) then deploy the full set.
+	#   1. Detect the exact running Asterisk version for ABI verification.
+	#      Captures four-part security release versions (e.g. 22.8.2.1) as well as the
+	#      standard three-part form.
+	#   2. Select bundle URL: check exact-version SHA256SUMS first, then major-version SHA256SUMS.
+	#      Abort with a clear error if neither is found — no legacy 2-module bundles are supported.
+	#      The SHA256SUMS file is fetched once here and reused in Step 3 (no double-fetch).
+	#   3. Download all modules listed in SHA256SUMS.
+	#   4. ABI-verify res_pjsip.so and res_pjsip_nat.so using grep -a -F directly on the binary
+	#      (avoids the strings|grep pipe and any dependency on the 'strings' utility).
+	#      Hard-abort on mismatch — deploying a version-mismatched module set causes crashes.
+	#   5. Create .ORIG backups (first run only, never overwritten) then deploy the full set.
+	#      Guard: abort if zero modules were actually deployed (module dir mismatch detected).
 
-	# Step 1: Determine the exact running Asterisk version (used for ABI verification)
+	# Step 1: Determine the exact running Asterisk version (used for ABI verification).
 	local ast_full_version
-	ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+	ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
 	if [[ -z "$ast_full_version" ]]; then
 		message "ERROR: Could not determine running Asterisk version."
 		message "Ensure Asterisk is installed and the 'asterisk' command is on PATH."
@@ -738,88 +742,60 @@ downloadonly() {
 	fi
 	message "Detected running Asterisk version: ${ast_full_version} (major: ${ASTVERSION})"
 
-	# Step 2: Construct the bundle URL (major version + arch).
-	# Bundles are keyed by major version so one build covers all patch releases in that branch.
-	local bundle_url="${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}"
+	# Step 2: Select bundle URL.
+	# All current bundles include a SHA256SUMS manifest (generated by build-prebuilt-pjsip-bundles.sh).
+	# Preference order:
+	#   1. Exact-version bundle (e.g. asterisk-22.8.2/) — modules match running binary exactly.
+	#   2. Major-version bundle (e.g. asterisk-22/)     — covers all patch releases in the branch.
+	# The SHA256SUMS file is fetched once during selection and reused in Step 3.
+	local exact_url="${PREBUILT_BASE_URL}/asterisk-${ast_full_version}"
+	local major_url="${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}"
+	local bundle_url=""
 
-	# Determine the Asterisk module directory — needed to discover installed PJSIP modules
-	local modules_dir
-	modules_dir=$(get_asterisk_module_dir)
+	local tmpdir
+	tmpdir=$(mktemp -d)
+	local sha256_file="${tmpdir}/SHA256SUMS"
 
-	# Build the list of PJSIP modules that are currently installed on this system.
-	# These are exactly the modules that link against res_pjsip.h and must be replaced.
-	shopt -s nullglob
-	local _installed_sos=("$modules_dir"/res_pjsip*.so "$modules_dir"/chan_pjsip.so)
-	shopt -u nullglob
+	if curl -fsSL -o "$sha256_file" "${exact_url}/SHA256SUMS" 2>/dev/null && [[ -s "$sha256_file" ]]; then
+		bundle_url="$exact_url"
+		message "Found exact-version bundle for Asterisk ${ast_full_version}."
 
-	local module_names=()
-	for _so in "${_installed_sos[@]}"; do
-		module_names+=("$(basename "$_so")")
-	done
+	elif curl -fsSL -o "$sha256_file" "${major_url}/SHA256SUMS" 2>/dev/null && [[ -s "$sha256_file" ]]; then
+		bundle_url="$major_url"
+		message "No exact-version bundle for ${ast_full_version}. Using major-version bundle (asterisk-${ASTVERSION})."
+		message "ABI verification will confirm the downloaded modules match your running Asterisk."
 
-	if [[ ${#module_names[@]} -eq 0 ]]; then
-		message "ERROR: No PJSIP modules (res_pjsip*.so / chan_pjsip.so) found in: ${modules_dir}"
-		message "Cannot determine what to replace. Check your Asterisk installation."
+	else
+		message "ERROR: No bundle found for Asterisk ${ast_full_version} (${DEBIAN_ARCH})."
+		message "Checked:"
+		message "  ${exact_url}/SHA256SUMS"
+		message "  ${major_url}/SHA256SUMS"
+		message "Run without --downloadonly to build patched modules from source."
+		rm -rf "$tmpdir"
 		terminate 1
 	fi
 
-	message "Installed PJSIP modules that will be replaced (${#module_names[@]}):"
-	for m in "${module_names[@]}"; do
-		message "  ${m}"
-	done
+	# Determine the Asterisk module directory
+	local modules_dir
+	modules_dir=$(get_asterisk_module_dir)
 
-	# Verify the bundle contains the two core required modules before downloading anything
-	local REQUIRED_MODULES=("res_pjsip.so" "res_pjsip_nat.so")
-	message "Verifying bundle at: ${bundle_url}"
-	for req in "${REQUIRED_MODULES[@]}"; do
-		if ! curl -fsIL "${bundle_url}/${req}" >/dev/null 2>&1; then
-			message "ERROR: Required module '${req}' not found in bundle."
-			message "  Checked: ${bundle_url}/${req}"
-			message ""
-			message "A valid bundle must contain at minimum: ${REQUIRED_MODULES[*]}"
-			message "To contribute a full PJSIP bundle for Asterisk ${ASTVERSION} (${DEBIAN_ARCH}),"
-			message "build using the script without --downloadonly and upload to:"
-		message "  https://github.com/Vince-0/MSTeams-PJSIPNAT/tree/main/prebuilt/debian12-${DEBIAN_ARCH}"
-			message ""
-			message "Alternatively, run the script without --downloadonly to build from source."
-			terminate 1
-		fi
-		message "  ${req}: found in bundle — OK"
-	done
+	# Step 3: Build the module download list from the SHA256SUMS manifest.
+	# Guard against an empty or malformed manifest — would otherwise deploy nothing silently.
+	local modules_to_fetch=()
+	mapfile -t modules_to_fetch < <(awk '{print $2}' "$sha256_file")
+	if [[ ${#modules_to_fetch[@]} -eq 0 ]]; then
+		message "ERROR: SHA256SUMS manifest is empty or could not be parsed — no modules to download."
+		rm -rf "$tmpdir"
+		terminate 1
+	fi
+	message "Bundle manifest: ${#modules_to_fetch[@]} modules to download from: ${bundle_url}"
 
-	# Step 3: Download every installed PJSIP module that exists in the bundle.
-	# Core modules (res_pjsip.so, res_pjsip_nat.so) are required; all others are best-effort
-	# (warn and skip if the bundle doesn't include them yet).
-	local tmpdir
-	tmpdir=$(mktemp -d)
+	# Step 4: Download all modules in the manifest.
 	local downloaded_modules=()
-	local skipped_modules=()
-
-	message "Downloading PJSIP module set from: ${bundle_url}"
-	for mod in "${module_names[@]}"; do
+	message "Downloading PJSIP module set..."
+	for mod in "${modules_to_fetch[@]}"; do
 		local url="${bundle_url}/${mod}"
 		local dest="${tmpdir}/${mod}"
-
-		# Determine whether this module is required
-		local is_required=false
-		for req in "${REQUIRED_MODULES[@]}"; do
-			[[ "$mod" == "$req" ]] && { is_required=true; break; }
-		done
-
-		# Probe availability in the bundle before downloading
-		if ! curl -fsIL "$url" >/dev/null 2>&1; then
-			if [[ "$is_required" == true ]]; then
-				# Should not happen (already checked above), but guard anyway
-				message "ERROR: Required module '${mod}' disappeared from bundle: ${url}"
-				rm -rf "$tmpdir"
-				terminate 1
-			else
-				message "  WARNING: ${mod} not found in bundle — skipping."
-				message "           Install it from source if needed (run without --downloadonly)."
-				skipped_modules+=("$mod")
-				continue
-			fi
-		fi
 
 		message "  Downloading ${mod} ..."
 		if ! curl -fsSL -o "$dest" "$url"; then
@@ -837,25 +813,22 @@ downloadonly() {
 		message "  Downloaded ${mod}: ${file_size} bytes — OK"
 		downloaded_modules+=("$mod")
 	done
-
-	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
-		message ""
-		message "WARNING: ${#skipped_modules[@]} installed module(s) were not found in the bundle and were skipped:"
-		for s in "${skipped_modules[@]}"; do message "  ${s}"; done
-		message "These modules will remain at their current (unpatched) version."
-		message "For a fully safe deployment, build all PJSIP modules from source (omit --downloadonly)."
-		message ""
-	fi
 	message "Downloaded ${#downloaded_modules[@]} module(s) from bundle."
 
-	# Step 4: ABI verification — every downloaded module must embed the running Asterisk version string.
-	# This confirms the bundle was compiled from the same Asterisk tree, preventing struct mismatches.
-	message "Verifying ABI compatibility (looking for version string '${ast_full_version}' in each module)..."
+	# Step 5: ABI verification — confirm res_pjsip.so and res_pjsip_nat.so embed the running
+	# Asterisk version string.  Use grep -a -F directly on the binary; this avoids the
+	# strings|grep pipe pattern which can produce SIGPIPE under set -o pipefail, and removes
+	# the dependency on the 'strings' utility being installed.
+	# Hard-abort on mismatch — deploying version-mismatched modules causes load failures or crashes.
+	message "Verifying ABI compatibility (looking for version string '${ast_full_version}')..."
 	local ver_ok=true
-	for mod in "${downloaded_modules[@]}"; do
-		local embedded
-		embedded=$(strings "${tmpdir}/${mod}" 2>/dev/null | grep -F "$ast_full_version" | head -1)
-		if [[ -n "$embedded" ]]; then
+	for mod in res_pjsip.so res_pjsip_nat.so; do
+		if [[ ! -f "${tmpdir}/${mod}" ]]; then
+			message "  ERROR: ${mod} missing from downloaded set — bundle may be incomplete."
+			ver_ok=false
+			continue
+		fi
+		if grep -a -qF "$ast_full_version" "${tmpdir}/${mod}" 2>/dev/null; then
 			message "  ${mod}: version string '${ast_full_version}' found — OK"
 		else
 			message "  WARNING: ${mod}: version string '${ast_full_version}' NOT found."
@@ -865,29 +838,34 @@ downloadonly() {
 
 	if [[ "$ver_ok" == false ]]; then
 		message ""
-		message "ERROR: ABI mismatch — one or more downloaded modules do not appear to be built"
-		message "from Asterisk ${ast_full_version}. Deploying mismatched modules causes crashes."
+		message "ERROR: ABI mismatch — downloaded modules do not appear to be built from"
+		message "Asterisk ${ast_full_version}. Deploying mismatched modules causes crashes."
 		message ""
-		message "Every res_pjsip*.so and chan_pjsip.so module links against res_pjsip.h and"
+		message "Every res_pjsip*.so and chan_pjsip.so links against res_pjsip.h and"
 		message "must come from the same build tree as res_pjsip.so itself."
 		message ""
 		message "Build from source instead: run the script without --downloadonly."
 		rm -rf "$tmpdir"
 		terminate 1
 	fi
-	message "ABI verification passed for all ${#downloaded_modules[@]} downloaded module(s)."
+	message "ABI verification passed — downloaded modules match ${ast_full_version}."
 
-	# Step 5: Deploy — create .ORIG backups (first run only, never overwritten),
+	# Step 6: Deploy — create .ORIG backups (first run only, never overwritten),
 	# then install each downloaded module and save a .MSTEAMS copy for future copyback.
+	# Only deploy modules that are actually present in the module directory — skip any bundle
+	# extras not installed on this system (safe; they are not loaded by Asterisk anyway).
 	message "Deploying PJSIP module set to: ${modules_dir}"
 	local deployed_count=0
+	local deployed_modules=()
+	local skipped_modules=()
 	for mod in "${downloaded_modules[@]}"; do
 		local dest="${modules_dir}/${mod}"
 		local backup="${modules_dir}/${mod}.ORIG"
 		local msteams_copy="${modules_dir}/${mod}.MSTEAMS"
 
 		if [[ ! -f "$dest" ]]; then
-			message "  WARNING: ${mod} not found in ${modules_dir} — skipping deployment."
+			message "  INFO: ${mod} not present in ${modules_dir} — skipping (not installed on this system)."
+			skipped_modules+=("$mod")
 			continue
 		fi
 
@@ -902,8 +880,18 @@ downloadonly() {
 		cp -v "${tmpdir}/${mod}" "$dest"
 		cp -v "${tmpdir}/${mod}" "$msteams_copy"
 		message "  Deployed: ${mod}"
+		deployed_modules+=("$mod")
 		(( deployed_count++ ))
 	done
+
+	# Guard: a zero-deploy means the module directory is wrong or the bundle contains
+	# none of the modules currently installed on this system — never exit silently.
+	if [[ $deployed_count -eq 0 ]]; then
+		message "ERROR: No modules were deployed."
+		message "Verify that Asterisk PJSIP modules exist in: ${modules_dir}"
+		rm -rf "$tmpdir"
+		terminate 1
+	fi
 
 	rm -rf "$tmpdir"
 	message ""
@@ -914,11 +902,11 @@ downloadonly() {
 	message "  Architecture:            ${DEBIAN_ARCH}"
 	message "  Module directory:        ${modules_dir}"
 	message "  Modules deployed (${deployed_count}):"
-	for mod in "${downloaded_modules[@]}"; do
+	for mod in "${deployed_modules[@]}"; do
 		message "    ${modules_dir}/${mod}"
 	done
 	if [[ ${#skipped_modules[@]} -gt 0 ]]; then
-		message "  Modules skipped (not in bundle — ${#skipped_modules[@]}):"
+		message "  Modules in bundle not installed on this system (${#skipped_modules[@]}):"
 		for s in "${skipped_modules[@]}"; do
 			message "    ${s}"
 		done
@@ -1305,26 +1293,77 @@ build_msteams() {
 	        fi
 	
 	        # Get source
-	        cd "$SRCDIR"
+	        cd "$SRCDIR" \
+	                || { message "ERROR: Source directory does not exist: $SRCDIR"; terminate 1; }
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
+	        local tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
+
+	        # Prefer an exact-version source tarball so compiled modules match the running binary.
+	        # Building from -current produces modules from the latest minor release, which may
+	        # differ from the running Asterisk binary (e.g. 22.9.x vs 22.8.2). Asterisk's module
+	        # version check rejects modules with a mismatched version at load time, causing a
+	        # crash/bootloop at PJSIP transport initialisation.
+	        # Captures four-part security release versions (e.g. 22.8.2.1) as well as the
+	        # standard three-part form.
+	        local ast_full_version
+	        ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+	        if [[ -n "$ast_full_version" ]]; then
+	                local exact_tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ast_full_version}.tar.gz"
+	                message "Checking for exact-version source tarball for Asterisk ${ast_full_version}..."
+
+	                if [[ -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        # Disk cache hit — use without a network probe.
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Found cached exact-version tarball: ${TARBALL}."
+	                elif wget -q -P "$SRCDIR" "$exact_tarball_url" 2>/dev/null \
+	                     && [[ -s "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        # Direct download — avoids a HEAD probe (some servers return 405 for HEAD).
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Downloaded exact-version tarball: ${TARBALL}."
+	                        message "Built modules will match the running Asterisk ${ast_full_version} binary exactly."
+	                else
+	                        rm -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz"  # remove any partial download
+	                        message "WARNING: Exact-version tarball not available for Asterisk ${ast_full_version}."
+	                        message "Falling back to ${TARBALL} (current release)."
+	                        message "Built modules may be from a different minor version than the running binary."
+	                fi
+	        else
+	                message "WARNING: Could not detect running Asterisk version — using ${TARBALL} (current)."
+	        fi
 
 	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
 	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
 	        else
 	                message "Downloading Asterisk source code tarball..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/$TARBALL"
+	                wget -P "$SRCDIR" "$tarball_url" \
+	                        || { message "ERROR: Failed to download Asterisk source tarball: $tarball_url"; terminate 1; }
 	        fi
 
 	        # Extract the tarball
 	        message "Extracting Asterisk source tarball..."
-		        tar -xzf "$SRCDIR/$TARBALL"
-	
-		        # Navigate to extracted directory
-		        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
+	        tar -xzf "$SRCDIR/$TARBALL"
+
+	        # Resolve the extracted source directory explicitly.
+	        # A glob-based cd silently stays in $SRCDIR when the pattern fails to match,
+	        # causing apply_ms_teams_runtime_patch to receive /usr/src instead of the source
+	        # tree and producing "can't find file to patch" errors.
+	        local extracted_src_dir
+	        extracted_src_dir=$(find "$SRCDIR" -maxdepth 1 -mindepth 1 -type d \
+	                -name "asterisk-${ASTVERSION}.*" | sort -V | tail -1)
+	        if [[ -z "$extracted_src_dir" || ! -d "$extracted_src_dir" ]]; then
+	                message "ERROR: Could not find extracted Asterisk source directory."
+	                message "  Expected: $SRCDIR/asterisk-${ASTVERSION}.*"
+	                message "  Ensure the tarball extracted correctly."
+	                terminate 1
+	        fi
+	        cd "$extracted_src_dir" \
+	                || { message "ERROR: Cannot enter source directory: $extracted_src_dir"; terminate 1; }
 
 	        # Apply MS Teams runtime FQDN patch BEFORE installing prerequisites.
 	        # Fail fast: no point spending time on install_prereq if the patch is missing or broken.
-	        if ! apply_ms_teams_runtime_patch "$PWD" "$ASTVERSION"; then
+	        if ! apply_ms_teams_runtime_patch "$extracted_src_dir" "$ASTVERSION"; then
 	                message "ERROR: Failed to apply MS Teams runtime patch to Asterisk sources."
 	                terminate 1
 	        fi
@@ -1412,7 +1451,7 @@ build_msteams() {
         message "Verifying patched modules contain ms_signaling_address..."
         local verify_failed=false
         for mod in res_pjsip.so res_pjsip_nat.so; do
-                if strings "$modules_dir/${mod}" 2>/dev/null | grep -q "ms_signaling_address"; then
+                if grep -a -qF "ms_signaling_address" "$modules_dir/${mod}" 2>/dev/null; then
                         message "  OK: ms_signaling_address found in $modules_dir/${mod}"
                 else
                         message "  ERROR: ms_signaling_address NOT found in $modules_dir/${mod}"
@@ -1482,20 +1521,66 @@ build_asterisk_only() {
 	                rm -rf "$SRCDIR"/asterisk-"${ASTVERSION}".*
 	        fi
 	
-	        cd "$SRCDIR"
+	        cd "$SRCDIR" \
+	                || { message "ERROR: Source directory does not exist: $SRCDIR"; terminate 1; }
 	        TARBALL="asterisk-${ASTVERSION}-current.tar.gz"
+	        local tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
+
+	        # Prefer an exact-version source tarball so compiled modules match the running binary.
+	        # Building from -current produces modules from the latest minor release, which may
+	        # differ from the running Asterisk binary. Captures four-part security release
+	        # versions (e.g. 22.8.2.1) as well as the standard three-part form.
+	        local ast_full_version
+	        ast_full_version=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)
+	        if [[ -n "$ast_full_version" ]]; then
+	                local exact_tarball_url="https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ast_full_version}.tar.gz"
+	                message "Checking for exact-version source tarball for Asterisk ${ast_full_version}..."
+
+	                if [[ -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Found cached exact-version tarball: ${TARBALL}."
+	                elif wget -q -P "$SRCDIR" "$exact_tarball_url" 2>/dev/null \
+	                     && [[ -s "$SRCDIR/asterisk-${ast_full_version}.tar.gz" ]]; then
+	                        TARBALL="asterisk-${ast_full_version}.tar.gz"
+	                        tarball_url="$exact_tarball_url"
+	                        message "Downloaded exact-version tarball: ${TARBALL}."
+	                        message "Built modules will match the running Asterisk ${ast_full_version} binary exactly."
+	                else
+	                        rm -f "$SRCDIR/asterisk-${ast_full_version}.tar.gz"
+	                        message "WARNING: Exact-version tarball not available for Asterisk ${ast_full_version}."
+	                        message "Falling back to ${TARBALL} (current release)."
+	                        message "Built modules may be from a different minor version than the running binary."
+	                fi
+	        else
+	                message "WARNING: Could not detect running Asterisk version — using ${TARBALL} (current)."
+	        fi
 
 	        if [[ -f "$SRCDIR/$TARBALL" ]]; then
 	                message "Found existing Asterisk tarball: $TARBALL (skipping download)"
 	        else
 	                message "Downloading Asterisk source code tarball for standalone install..."
-	                wget -P "$SRCDIR" "https://downloads.asterisk.org/pub/telephony/asterisk/${TARBALL}"
+	                wget -P "$SRCDIR" "$tarball_url" \
+	                        || { message "ERROR: Failed to download Asterisk source tarball: $tarball_url"; terminate 1; }
 	        fi
 
 	        message "Extracting Asterisk source tarball..."
 	        tar -xzf "$SRCDIR/$TARBALL"
-	
-	        cd "$SRCDIR"/asterisk-"${ASTVERSION}".*
+
+	        # Resolve the extracted source directory explicitly.
+	        # A glob-based cd silently stays in $SRCDIR when the pattern fails to match,
+	        # causing apply_ms_teams_runtime_patch to receive /usr/src instead of the source tree.
+	        local extracted_src_dir
+	        extracted_src_dir=$(find "$SRCDIR" -maxdepth 1 -mindepth 1 -type d \
+	                -name "asterisk-${ASTVERSION}.*" | sort -V | tail -1)
+	        if [[ -z "$extracted_src_dir" || ! -d "$extracted_src_dir" ]]; then
+	                message "ERROR: Could not find extracted Asterisk source directory."
+	                message "  Expected: $SRCDIR/asterisk-${ASTVERSION}.*"
+	                message "  Ensure the tarball extracted correctly."
+	                terminate 1
+	        fi
+	        cd "$extracted_src_dir" \
+	                || { message "ERROR: Cannot enter source directory: $extracted_src_dir"; terminate 1; }
 
 	        message "Installing dependencies for standalone Asterisk build..."
 	        contrib/scripts/install_prereq install
@@ -1519,7 +1604,7 @@ build_asterisk_only() {
 	        message "Local state base directory: $ASTERISK_LOCALSTATEDIR"
 
 		# Apply MS Teams runtime FQDN patch (ms_signaling_address) to PJSIP NAT
-		if ! apply_ms_teams_runtime_patch "$PWD" "$ASTVERSION"; then
+		if ! apply_ms_teams_runtime_patch "$extracted_src_dir" "$ASTVERSION"; then
 		        message "ERROR: Failed to apply MS Teams runtime patch to Asterisk sources (standalone install)."
 		        terminate 1
 		fi
@@ -1962,24 +2047,27 @@ trap 'terminate 143' TERM
 	       message "SSL: $ssl_desc"
 	       message "==================================================="
 	       if [[ "$ASTERISK_ONLY" == true ]]; then
-	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
-	               message "  Would download and extract: $tarurl"
+	               message "  Would detect running Asterisk version and check for exact-version source tarball:"
+	               message "    https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-<full-version>.tar.gz"
+	               message "  If found, uses it (modules match running binary exactly)."
+	               message "  If not, falls back to: https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would apply the MS Teams ms_signaling_address runtime patch to PJSIP sources."
 	               message "  Would run ./configure with a chosen installation prefix (default: /usr, configs in /etc, data in /var)."
 	               message "  Would run make && make install to install Asterisk into the chosen prefix."
 	               message "  Would optionally create and enable a systemd service at /etc/systemd/system/asterisk.service."
 	               message "  Would optionally install sample configuration files via 'make samples'."
 	       elif [[ "$downloadonly" == true ]]; then
-	               message "  Would detect installed PJSIP modules (res_pjsip*.so, chan_pjsip.so) in the Asterisk module dir."
 	               message "  Would detect the exact running Asterisk version (asterisk -V) for ABI verification."
-	               message "  Would fetch the full PJSIP module set from: ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/"
-	               message "    — res_pjsip.so and res_pjsip_nat.so are required (abort if missing from bundle)."
-	               message "    — All other res_pjsip*.so and chan_pjsip.so are downloaded if present in bundle."
-	               message "    — Non-core modules absent from the bundle are skipped with a warning."
-	               message "  Every module that links against res_pjsip.h must come from the same build to prevent crashes."
-	               message "  Would ABI-verify each downloaded module (Asterisk version string embedded in the .so)."
-	               message "  Would create .ORIG backups for all modules being replaced (first run only)."
+	               message "  Would select bundle URL in order of preference:"
+	               message "    1. Exact-version:  ${PREBUILT_BASE_URL}/asterisk-<full-version>/SHA256SUMS"
+	               message "    2. Major-version:  ${PREBUILT_BASE_URL}/asterisk-${ASTVERSION}/SHA256SUMS"
+	               message "    3. Abort with a clear error if neither SHA256SUMS is found."
+	               message "  For the selected bundle: would download all modules listed in SHA256SUMS (~47 modules)."
+	               message "  Would ABI-verify res_pjsip.so and res_pjsip_nat.so using grep -a -F on the binary."
+	               message "    — Hard-abort on ABI mismatch; no warn-and-continue."
+	               message "  Would create .ORIG backups for all replaced modules (first run only)."
 	               message "  Would deploy the full downloaded set to the Asterisk module directory."
+	               message "  Would abort if zero modules were actually deployed (module dir mismatch guard)."
 	       elif [[ "$restore" == true ]]; then
 	               message "  Would discover all res_pjsip*.so.ORIG and chan_pjsip.so.ORIG backups in the module directory."
 	               message "  Would restore each discovered .ORIG backup to its original module name."
@@ -1989,8 +2077,9 @@ trap 'terminate 143' TERM
 	               message "  Would copy each .MSTEAMS file back to its active module name."
 	               message "  Would require a full Asterisk/FreePBX restart afterward."
 	       else
-	               tarurl="https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
-	               message "  Would download and extract: $tarurl"
+	               message "  Would detect running Asterisk version and check for exact-version source tarball:"
+	               message "    https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-<full-version>.tar.gz"
+	               message "  If found, uses it. If not, falls back to: https://downloads.asterisk.org/pub/telephony/asterisk/asterisk-${ASTVERSION}-current.tar.gz"
 	               message "  Would apply the MS Teams ms_signaling_address runtime patch to Asterisk PJSIP sources."
 	               message "  Would compile Asterisk (make) and collect full PJSIP module set from build output:"
 	               message "    res/res_pjsip*.so  — PJSIP core and supplementary modules"
