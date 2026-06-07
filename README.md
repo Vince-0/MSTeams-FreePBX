@@ -5,6 +5,8 @@ Author [https://github.com/Vince-0](https://github.com/Vince-0/Projects)
 
 Use at your own risk.
 
+[MIT License](LICENSE)
+
 ## Attribution
 Updates provided by [Rowan S](https://github.com/rowansc1) for source versions and directory fixes in [Pull #7](https://github.com/Vince-0/MSTeams-FreePBX/pull/7)
 
