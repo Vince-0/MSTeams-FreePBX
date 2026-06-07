@@ -19,6 +19,12 @@ on:
   pull_request:
     branches: ["**"]
 
+# Opt into Node.js 24 ahead of the mandatory migration (forced default: June 16 2026).
+# Eliminates the deprecation warning produced by actions/checkout@v4 on Node.js 20 runners.
+# Remove this block once actions/checkout is updated to a Node.js 24-native release (v5+).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   shellcheck:
     name: ShellCheck

@@ -101,6 +101,7 @@ maintenance overhead once the workflow is in place.
   `MSTeams-PJSIPNAT` repository and is linted by its own CI workflow.
 - All ShellCheck `error` and `warning` findings fixed in `MSTeams-FreePBX-Install.sh`.
 - SC2162 (`read` without `-r`) fixed as defensive best practice.
+- Node.js 20 deprecation resolved — see [CI Workflow Status](#ci-workflow-status) below.
 
 **Effort:** ~2 hours
 **CI runtime:** < 5 seconds on `ubuntu-latest`
@@ -166,6 +167,44 @@ binary or the `strings` utility.
   - Minimal-`PATH` test confirming the command works without `strings` on `PATH`
 
 **Effort:** 1 hour
+
+---
+
+---
+
+## CI Workflow Status
+
+### First run — June 2026
+
+The workflow triggered successfully on push to `main` (commit `c09a0e1`). ShellCheck passed
+with **0 findings** at `warning` severity, confirming all Phase 1 fixes are effective in CI.
+
+**Warning observed on first run:**
+
+```
+Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may
+not work as expected: actions/checkout@v4. Actions will be forced to run with Node.js 24 by
+default starting June 16th, 2026. Node.js 20 will be removed from the runner on
+September 16th, 2026.
+```
+
+**Root cause:** `actions/checkout@v4` bundles a Node.js 20 runtime. GitHub Actions announced
+a mandatory migration to Node.js 24 as the default from June 16 2026.
+
+**Fix applied (commit `c09a0e1` + follow-up):** Added `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true`
+to the workflow-level `env` block in `.github/workflows/lint.yml`. This is the opt-in mechanism
+recommended by the deprecation notice itself. It forces the `actions/checkout@v4` action to
+execute under Node.js 24 and eliminates the warning.
+
+```yaml
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+```
+
+**Future:** Once `actions/checkout` publishes a Node.js 24-native release (expected as v5 or a
+v4.x patch), the `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` env block should be removed and the
+`uses: actions/checkout@v4` pin updated to the new version. The removal is a one-line diff with
+no functional impact.
 
 ---
 

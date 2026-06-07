@@ -262,6 +262,9 @@ Requires testing for SSL, CPU architectures, Raspberry Pi.
 
 Operating system version and distribution options.
 
+See [Unit-Testing.md](Unit-Testing.md) for the CI/CD pipeline setup, current ShellCheck status,
+and the phased roadmap for adding BATS unit tests and regression guards.
+
 ### `--upgrade-asterisk` mode
 
 Add an `--upgrade-asterisk` mode to `MSTeams-FreePBX-Install.sh` that upgrades (or downgrades) the running Asterisk installation to a specified major version, then automatically applies the `ms_signaling_address` PJSIP patch to the newly installed version.
