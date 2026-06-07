@@ -1,0 +1,38 @@
+# ShellCheck static analysis for all shell scripts in this repository.
+#
+# Failure threshold: warning
+#   - error   → always fails the build
+#   - warning → fails the build (SC2034 unused vars, SC2086 unquoted, SC2221/2222 unreachable patterns, etc.)
+#   - info    → reported in log but does NOT fail the build
+#
+# Note: build-prebuilt-pjsip-bundles.sh lives in the MSTeams-PJSIPNAT repository
+# and is linted by that repo's own CI workflow.
+#
+# Run locally to match CI exactly:
+#   shellcheck --severity=warning MSTeams-FreePBX-Install.sh
+
+name: Lint
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck --version
+
+      - name: Lint MSTeams-FreePBX-Install.sh
+        run: shellcheck --severity=warning MSTeams-FreePBX-Install.sh

@@ -40,9 +40,7 @@ log=$LOG_FILE
 PREBUILT_BASE_URL=""  # Will be constructed dynamically based on architecture
 CPU_ARCH=""           # Detected CPU architecture (uname -m output)
 DEBIAN_ARCH=""        # Debian architecture name (amd64, arm64, etc.)
-ARCH_FROM_CLI=false   # Whether architecture was specified via --arch
 LIB_PATH=""           # Override library path (from --lib parameter)
-LIB_FROM_CLI=false    # Whether library path was specified via --lib
 SSL_EMAIL=""
 SKIP_SSL=false
 SSL_STATUS="Not requested"
@@ -152,6 +150,7 @@ show_help() {
 	    echo "  -h, --help       Show this help message and exit"
 	}
 
+# shellcheck disable=SC2317  # log() is a valid helper; SC2317 false-positive (called indirectly)
 log() {
         echo "$(date +"%Y-%m-%d %T") - $*" >> "$LOG_FILE"
 }
@@ -451,7 +450,7 @@ confirm_run_options() {
 	    message "==================================================="
 		    echo ""
 		    echo -n "Proceed with these settings? (y/n) [y]: "
-		    read confirm
+		    read -r confirm
 		    message "User response to proceed prompt: '${confirm:-y}'"
 		    if [[ -n "$confirm" && ! "$confirm" =~ ^[Yy]$ ]]; then
 		        message "User chose not to proceed; aborting before making any changes."
@@ -503,7 +502,6 @@ ASTVERSION_FROM_CLI=false
 		                --arch)
 		                        if [[ -n "$2" && "$2" != -* ]]; then
 		                            CPU_ARCH="$2"
-		                            ARCH_FROM_CLI=true
 		                            shift 2
 		                        else
 		                            echo "Error: --arch requires a value (e.g. --arch x86_64 or --arch aarch64)" >&2
@@ -512,13 +510,11 @@ ASTVERSION_FROM_CLI=false
 		                        ;;
 		                --arch=*)
 		                        CPU_ARCH="${1#*=}"
-		                        ARCH_FROM_CLI=true
 		                        shift # past argument
 		                        ;;
 		                --lib)
 		                        if [[ -n "$2" && "$2" != -* ]]; then
 		                            LIB_PATH="$2"
-		                            LIB_FROM_CLI=true
 		                            shift 2
 		                        else
 		                            echo "Error: --lib requires a value (e.g. --lib /usr/lib/x86_64-linux-gnu)" >&2
@@ -527,7 +523,6 @@ ASTVERSION_FROM_CLI=false
 		                        ;;
 		                --lib=*)
 		                        LIB_PATH="${1#*=}"
-		                        LIB_FROM_CLI=true
 		                        shift # past argument
 		                        ;;
 		                --email)
@@ -572,7 +567,7 @@ ASTVERSION_FROM_CLI=false
 		                        show_help
 		                        exit 0
 		                        ;;
-	                -*|--*)
+	                -*)
 	                        echo "Unknown option $1"
 	                        show_help
 	                        exit 1
@@ -603,7 +598,7 @@ fi
 if [[ "$dryrun" != true && "$SKIP_SSL" != true && "$USE_EXISTING_CERT" != true && -z "$SSL_EMAIL" && "$restore" != true && "$copyback" != true && "$downloadonly" != true ]]; then
 	echo ""
 	echo -n "SSL certificate Email (blank to skip SSL, or press Enter to only use existing certs): "
-	read ssl_email_input
+	read -r ssl_email_input
 	message "User SSL email input: '${ssl_email_input:-<blank>}'"
 	if [[ -n "$ssl_email_input" ]]; then
 		SSL_EMAIL="$ssl_email_input"
@@ -926,8 +921,6 @@ downloadonly() {
 install_letsencrypt() {
 	local apache_was_running=false
 	local cert_source=""   # where we ultimately get the cert from
-	local existing_cert="" # path to existing fullchain/cert file
-	local existing_key=""  # path to existing private key
 
 	# ---------------------------------------------------------------
 	# Helper: restart apache2 if it was stopped
@@ -1077,7 +1070,7 @@ install_letsencrypt() {
 		echo "  [S] Skip SSL installation"
 		echo -n "Choice [U]: "
 		local choice
-		read choice
+		read -r choice
 		choice="${choice:-U}"
 		message "User SSL choice: '$choice'"
 
@@ -1588,7 +1581,7 @@ build_asterisk_only() {
 	        # Prompt for installation prefix
 	        local prefix_input
 		echo -n "Enter installation prefix [/usr (Debian standard)]: "
-		read prefix_input
+		read -r prefix_input
 	        if [[ -z "$prefix_input" ]]; then
 	                ASTERISK_PREFIX="/usr"
 	                ASTERISK_SYSCONFDIR="/etc"
@@ -1621,7 +1614,7 @@ build_asterisk_only() {
 	        # Systemd service prompt
 	        local svc_reply
 		echo -n "Create and enable systemd service for Asterisk? (y/n) [y]: "
-		read svc_reply
+		read -r svc_reply
 	        if [[ -z "$svc_reply" || "$svc_reply" =~ ^[Yy] ]]; then
 	                message "Creating and enabling systemd service for Asterisk..."
 	                create_asterisk_systemd_service
@@ -1632,7 +1625,7 @@ build_asterisk_only() {
 	        # Sample configs prompt
 	        local samples_reply
 		echo -n "Install sample Asterisk configuration files? (y/n) [n]: "
-		read samples_reply
+		read -r samples_reply
 	        if [[ "$samples_reply" =~ ^[Yy] ]]; then
 	                message "Installing Asterisk sample configuration files (make samples)..."
 	                make samples
@@ -1919,7 +1912,6 @@ trap 'terminate 143' TERM
 		# share incompatible internal structs and will cause crashes or load failures.
 		# Only check for build modes — restore/copyback/downloadonly don't compile from source.
 		if [[ "$ASTVERSION_FROM_CLI" == true && "$restore" != true && "$copyback" != true && "$downloadonly" != true ]]; then
-			local _running_major
 			_running_major=$(asterisk -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
 			if [[ -n "$_running_major" && "$_running_major" != "$ASTVERSION" ]]; then
 				message ""
@@ -1964,7 +1956,6 @@ trap 'terminate 143' TERM
 		       # Check if CPU_ARCH is a Debian arch name by seeing if mapping changed it
 		       if [[ "$CPU_ARCH" == "$DEBIAN_ARCH" ]] && [[ "$CPU_ARCH" =~ ^(amd64|arm64|armhf|i386|ppc64el)$ ]]; then
 		               # User provided Debian arch name, map to kernel arch for CPU_ARCH
-		               local kernel_arch
 		               kernel_arch=$(map_to_kernel_arch "$CPU_ARCH")
 		               message "Detected Debian architecture name provided; mapping to kernel architecture"
 		               message "  Debian architecture: $DEBIAN_ARCH"
@@ -1984,8 +1975,11 @@ trap 'terminate 143' TERM
 		check_architecture_support "$CPU_ARCH"
 
 		if [[ "$dryrun" == true ]]; then
-	       local lib_path fqdn_display mode_desc ssl_desc
+	       # SC2168: 'local' is only valid inside a function — use plain variables here.
 	       lib_path=$(get_lib_path)
+	       fqdn_display=""
+	       mode_desc=""
+	       ssl_desc=""
 
 	       # Get FQDN for display (used for SSL and ms_signaling_address examples)
 	       if [[ "$restore" == true || "$copyback" == true || "$downloadonly" == true ]]; then
@@ -2012,14 +2006,14 @@ trap 'terminate 143' TERM
 	       fi
 
 	       # Determine SSL description, including any existing certificate detection
-	       local ssl_cert_info=""
+	       ssl_cert_info=""
 	       if [[ "$SKIP_SSL" == true ]]; then
 	           ssl_desc="--no-ssl (SSL disabled - required for MSTeams Direct Routing)"
 	       else
 	           if [[ "$fqdn_display" != "N/A"* && -n "$fqdn_display" ]]; then
-	               local _cb_dir="/etc/letsencrypt/live/${fqdn_display}"
-	               local _ast_ssl="/etc/asterisk/ssl"
-	               local _expiry
+	               _cb_dir="/etc/letsencrypt/live/${fqdn_display}"
+	               _ast_ssl="/etc/asterisk/ssl"
+	               _expiry=""
 	               if [[ -f "${_cb_dir}/fullchain.pem" && -f "${_cb_dir}/privkey.pem" ]]; then
 	                   _expiry=$(openssl x509 -enddate -noout -in "${_cb_dir}/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
 	                   ssl_cert_info=" | Found certbot cert: ${_cb_dir} (expires: ${_expiry:-unknown})"
@@ -2110,18 +2104,17 @@ trap 'terminate 143' TERM
 	        build_asterisk_only "$ASTVERSION"
 	else
 	        message "No options enabled: running MSTeams-FreePBX-Install."
-	        build_msteams $ASTVERSION
+	        build_msteams "$ASTVERSION"
 	fi
 
 	## FINISH
 	apt install -y bc
 	duration=$(echo "$(date +%s.%N) - $start" | bc)
-	execution_time=$(printf "%.2f seconds" $duration)
+	execution_time=$(printf "%.2f seconds" "$duration")
 	message "Total script Execution Time: $execution_time"
 		if [[ "$ASTERISK_ONLY" == true ]]; then
 		        print_asterisk_only_summary
 		elif [[ "$restore" == true ]]; then
-		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Restore operation summary:"
 		        message "  - Mode: restore original full PJSIP module set from .ORIG backups"
@@ -2130,7 +2123,6 @@ trap 'terminate 143' TERM
 		        message "  - Every module linking against res_pjsip.h is restored together to prevent ABI mismatches."
 		        message "  - REQUIRED: Restart Asterisk/FreePBX to activate: fwconsole restart"
 		elif [[ "$copyback" == true ]]; then
-		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Copyback operation summary:"
 		        message "  - Mode: copy back MSTeams-patched full PJSIP module set from .MSTEAMS copies"
@@ -2139,7 +2131,6 @@ trap 'terminate 143' TERM
 		        message "  - Every module linking against res_pjsip.h is deployed together to prevent ABI mismatches."
 		        message "  - REQUIRED: Restart Asterisk/FreePBX to activate: fwconsole restart"
 		elif [[ "$downloadonly" == true ]]; then
-		        local modules_dir
 		        modules_dir=$(get_asterisk_module_dir)
 		        message "Download/install operation summary:"
 		        message "  - Mode: download prebuilt full PJSIP module set from GitHub"
