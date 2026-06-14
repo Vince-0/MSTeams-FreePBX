@@ -7,11 +7,30 @@ Use at your own risk.
 
 [MIT License](LICENSE)
 
+---
+
+> ## ⚠️ This project is now superseded by native Asterisk support
+>
+> **Asterisk PR #1960** — [Add `external_signaling_hostname` transport option](https://github.com/asterisk/asterisk/pull/1960) — was **merged on 2026-06-09** and cherry-picked to the Asterisk `20`, `22`, and `23` branches.
+>
+> The native `external_signaling_hostname` PJSIP transport option is available from:
+> - **Asterisk 20.21.0**
+> - **Asterisk 22.11.0** (LTS)
+> - **Asterisk 23.5.0**
+>
+> If you are running any of those versions or later, **do not use this script**. Instead, set `external_signaling_hostname` in your PJSIP transport configuration — no source patch, no module replacement required. See [Runtime FQDN configuration](#runtime-fqdn-configuration) below.
+>
+> **This repository and installer remain available only for legacy systems that cannot upgrade** — primarily Asterisk 21, which reached end-of-life before the backport and will not receive the native option.
+
+---
+
 ## Attribution
 Updates provided by [Rowan S](https://github.com/rowansc1) for source versions and directory fixes in [Pull #7](https://github.com/Vince-0/MSTeams-FreePBX/pull/7)
 
 ## What?
 This BASH [script](https://github.com/Vince-0/MSTeams-FreePBX/blob/main/MSTeams-FreePBX-Install.sh) compiles Asterisk from source, applies the `ms_signaling_address` patch, and deploys the full patched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) into FreePBX Asterisk to act as an SBC for MS Teams Direct Routing VOIP calls.
+
+> **Legacy use only.** For Asterisk 20.21.0+, 22.11.0+, and 23.5.0+, use the native `external_signaling_hostname` transport option instead.
 
 ## Why?
 Organisations with MS Teams may want to enable their users to make phone calls from the MS Teams application. This is done with MS Teams Direct Routing.
@@ -56,7 +75,9 @@ FreePBX (for the default FreePBX integration mode). Usually installed from https
 
 Debian 12 Bookworm
 
-Asterisk 21, 22 (LTS) or 23 (pre-installed for FreePBX mode; for `--asterisk-only` the script builds Asterisk itself)
+**Asterisk 21** (primary legacy target — this is the version that will not receive the native `external_signaling_hostname` backport).
+
+Asterisk 22 or 23 **older than the backport releases** (22.11.0 / 23.5.0) also work, but upgrading to a release with native support is strongly recommended instead.
 
 ## Usage
 ### Download
@@ -159,34 +180,50 @@ During `--asterisk-only` runs you will be prompted to:
 `--asterisk-only` is **mutually exclusive** with `--downloadonly`, `--restore`, and `--copyback`.
 
 
-## Runtime FQDN configuration (`ms_signaling_address`)
+## Runtime FQDN configuration
+
+MS Teams Direct Routing requires that the SIP `Contact` and `Via` headers contain a **FQDN** rather than an IP address. The sections below describe how to configure this.
+
+### Native option — Asterisk 20.21.0 / 22.11.0 / 23.5.0 and later (recommended)
+
+Asterisk PR #1960 added the `external_signaling_hostname` transport option natively. No patching, no module replacement.
+
+Add `external_signaling_hostname` to your PJSIP transport stanza:
+
+```ini
+[transport-ms-teams]
+type=transport
+protocol=tls
+bind=0.0.0.0:5061
+cert_file=/etc/letsencrypt/live/sbc.example.com/fullchain.pem
+priv_key_file=/etc/letsencrypt/live/sbc.example.com/privkey.pem
+method=tlsv1_2
+external_signaling_address=XXX.XXX.XXX.XXX      ; public IP address of your SBC
+external_signaling_port=5061                     ; external SIP TLS port
+external_signaling_hostname=sbc.example.com      ; FQDN — must match your certificate CN
+```
+
+`external_signaling_hostname` is mutually exclusive with `external_signaling_address` in the `Contact`/`Via` hostname position. When set, it takes precedence over the IP address for header rewriting. No validation of the hostname is performed by Asterisk — ensure it is a valid public FQDN.
+
+After editing, reload PJSIP: `asterisk -rx 'pjsip reload'` (or `fwconsole reload` on FreePBX).
+
+---
+
+### Legacy option — Asterisk 21 and unpatched older versions (`ms_signaling_address`)
+
+> **Only for systems that cannot use the native option above.** If your Asterisk version supports `external_signaling_hostname`, use that instead and skip this section.
 
 This project uses an Asterisk PJSIP NAT patch based on the following upstream work:
 
 <https://github.com/eagle26/asterisk/commit/8ee033215acf4e7de7b4aa415539d82a54eadf64>
 
-The patch adds a new transport option `ms_signaling_address`. Instead of hard-coding the FQDN at build time, it is read from your PJSIP transport configuration at runtime. The patch touches three source files: `include/asterisk/res_pjsip.h` (struct definition), `res/res_pjsip/config_transport.c` (config parsing, compiled into `res_pjsip.so`), and `res/res_pjsip_nat.c` (header rewriting, compiled into `res_pjsip_nat.so`). Because `res_pjsip.h` defines structs used across the PJSIP module family, every `res_pjsip*.so` module and `chan_pjsip.so` must be replaced from the same patched build.
+The patch adds a transport option `ms_signaling_address`. The patch touches three source files: `include/asterisk/res_pjsip.h` (struct definition), `res/res_pjsip/config_transport.c` (config parsing, compiled into `res_pjsip.so`), and `res/res_pjsip_nat.c` (header rewriting, compiled into `res_pjsip_nat.so`). Because `res_pjsip.h` defines structs used across the PJSIP module family, every `res_pjsip*.so` module and `chan_pjsip.so` must be replaced from the same patched build.
 
 The key parameters on your `transport` object in `pjsip.conf` are:
 
 - `external_signaling_address` – the **public IP address** of your SBC as seen by MS Teams (usually your WAN IP or load balancer VIP).
 - `external_signaling_port` – the **external SIP port** forwarded from the internet to Asterisk (typically `5061` for TLS).
 - `ms_signaling_address` – the **FQDN** MS Teams expects to see in SIP Contact and Via headers (this must match the FQDN you configure in Microsoft 365 and on your TLS certificate).
-
-To configure these options:
-
-1. Choose the FQDN that will represent your SBC to MS Teams, for example `sbc.example.com`. This FQDN:
-   - Must resolve in public DNS to your SBC public IP.
-   - Must appear in the certificate presented by Asterisk (CN or SAN).
-   - Must match what you configure in the Microsoft Teams Direct Routing/SBC settings.
-2. Determine the public IP and port that MS Teams will use to reach your SBC:
-   - `external_signaling_address` = that public IP address.
-   - `external_signaling_port` = the TLS SIP port you expose (commonly `5061`).
-3. Edit your PJSIP transport configuration:
-   - On a plain Asterisk system, edit `/etc/asterisk/pjsip.conf` and add or update the appropriate `transport` section.
-   - On a FreePBX system, add the transport in the appropriate custom file (for example `/etc/asterisk/pjsip.transports_custom.conf`), rather than editing the FreePBX‑managed `pjsip.conf` directly.
-4. Set `ms_signaling_address` to the SBC FQDN you chose in step 1.
-5. Reload PJSIP (for example from the Asterisk CLI with `pjsip reload` or via FreePBX) so the new transport settings take effect.
 
 Example transport stanza:
 
@@ -249,11 +286,11 @@ ms_signaling_address=sbc.example.com      ; FQDN — must match your certificate
 
 If `ms_signaling_address` is not set, Asterisk continues to use the existing behaviour based on `external_signaling_address` and `external_signaling_port`.
 
-The install script:
+The install script applies the `ms_signaling_address` patch to the Asterisk sources and deploys the full matched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) in default FreePBX mode. In `--asterisk-only` mode, the patched Asterisk tree is built and installed as a complete standalone install.
 
-- Applies the `ms_signaling_address` patch to the Asterisk sources and deploys the full matched PJSIP module set (`res_pjsip*.so` + `chan_pjsip.so`) in default FreePBX mode. In `--asterisk-only` mode, the patched Asterisk tree is built and installed as a complete standalone install.
+## Compiled PJSIP module set for Asterisk 21 on Debian 12 (legacy)
 
-## Compiled PJSIP module set for Asterisk 21, 22 and 23 on Debian 12
+> **Legacy only.** These prebuilt modules are only relevant for Asterisk 21 (and older unpatched 22/23 installs). If your Asterisk version supports the native `external_signaling_hostname` option, no module replacement is needed.
 
 Precompiled full PJSIP module bundles for Asterisk 21, 22 and 23 on Debian 12 amd64 are available in the following repository. Each major-version folder contains every `res_pjsip*.so` module plus `chan_pjsip.so`, built from the same patched source tree:
 
@@ -303,13 +340,13 @@ Add an `--upgrade-asterisk` mode to `MSTeams-FreePBX-Install.sh` that upgrades (
 
 [Jose's](https://github.com/eagle26) run time [patch](https://github.com/asterisk/asterisk/compare/master...eagle26:asterisk:master)
 
-### Upstream effort — native `external_signaling_hostname` transport option
+### Upstream native support — `external_signaling_hostname`
 
-There is an open Asterisk upstream pull request to add a native `external_signaling_hostname` transport option directly to PJSIP, which would make this runtime patch unnecessary:
+Asterisk PR #1960 was **merged on 2026-06-09** and cherry-picked to Asterisk branches `20`, `22`, and `23`:
 
 [asterisk/asterisk#1960 — Add external_signaling_hostname transport option](https://github.com/asterisk/asterisk/pull/1960)
 
-If merged, a future Asterisk release would support setting the FQDN in SIP Contact and Via headers via `pjsip.conf` without any source patch or module replacement.
+The native `external_signaling_hostname` transport option is available from **Asterisk 20.21.0**, **22.11.0**, and **23.5.0**. On those versions, no source patch or module replacement is needed — set the option directly in `pjsip.conf`.
 
 ### Related projects
 
