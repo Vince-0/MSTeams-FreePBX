@@ -235,3 +235,53 @@ bats tests/unit.bats
 bats tests/guards.bats
 ```
 
+---
+
+## MSTeams-DR-Wizard.sh — Test Suite (Phase 11, June 2026)
+
+### Automated test inventory
+
+| Suite | File | Tests | Tool | Coverage |
+|---|---|---|---|---|
+| Phase 1 — version detection | `/tmp/test_phase1.sh` | 25 | bash | `semver_gte`, `check_native_support` all branches, NOT_INSTALLED |
+| Phase 3 — FQDN & DNS | `/tmp/test_phase3.sh` | 12 | bash | `resolve_fqdn`, `detect_public_ip`, `verify_dns_resolution`, `verify_fqdn_matches_cert` |
+| Phase 4 — transport config | `/tmp/test_phase4.sh` | 20 | bash | `generate_transport_stanza`, `set_transport_defaults`, `inject_transport_config`, `backup_config_file` |
+| Phase 5 — endpoint config | `/tmp/test_phase5.sh` | 39 | bash | `generate_endpoint_stanza`, `inject_endpoint_config`, `ensure_pjsip_include`, MS IP ranges |
+| Phase 6 — firewall | `/tmp/test_phase6.sh` | 24 | bash | `_check_port_bound`, `_check_ufw_port`, `_check_iptables_port`, `check_firewall_ports` |
+| Phase 7 — greenfield build | `/tmp/test_phase7.sh` | 44 | bash | All source-build functions, dry-run plan, systemd unit generation |
+| Phase 8 — brownfield upgrade | `/tmp/test_phase8.sh` | 31 | bash | `backup_etc_asterisk`, `detect_asterisk_prefix`, `offer_asterisk_upgrade`, U-path wiring |
+| Phase 9+10 — restore & audit | `/tmp/test_phase9.sh` | 24 | bash | `restore_etc_asterisk`, `check_external_signaling_hostname`, `--check` exit code counter |
+| BATS suite | `tests/wizard.bats` | 25 | BATS 1.8.2 | `semver_gte`, `check_native_support`, `generate_transport_stanza`, `--dry-run`, `--check` |
+| **Total** | | **244** | | |
+
+### Key design decisions
+
+**`BASH_SOURCE` guard** — The wizard wraps its argument parser and `main()` call in
+`if [[ "${BASH_SOURCE[0]}" == "${0}" ]]`, so `source`-ing the file in tests is safe:
+no top-level side effects execute.
+
+**Stub pattern** — Tests define `message()`, `terminate()`, and `dry_run_gate()` before sourcing.
+This prevents log noise and allows dry-run behavior to be toggled via `dryrun=true`.
+
+**Subshell discipline** — Functions that communicate results use global variables
+(`LAST_BACKUP_PATH`, `AST_FULL_VERSION`, `TARBALL`, `TARBALL_URL`) rather than stdout,
+so callers in the same shell can read them without `$(...)` subshell capture.
+Tests that verify stdin-consuming functions use `<<<` (herestring) or `< <(printf ...)`
+to keep the function in the current shell and preserve variable side effects.
+
+### Running the full test suite
+
+```bash
+# Static checks
+bash -n MSTeams-DR-Wizard.sh && echo "Syntax OK"
+shellcheck -x -S warning MSTeams-DR-Wizard.sh && echo "ShellCheck OK"
+
+# BATS suite (requires: apt-get install -y bats)
+bats tests/wizard.bats
+
+# Phase bash suites (run from repo root)
+for f in /tmp/test_phase{1,3,4,5,6,7,8,9}.sh; do
+    bash "$f" 2>/dev/null && echo "$f: OK" || echo "$f: FAIL"
+done
+```
+
